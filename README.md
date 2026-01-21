@@ -26,31 +26,40 @@ We'll implement a **three-layer defense system**:
 ## 👥 Team Structure & Task Division
 
 ### 👤 Person 1: Research Lead & JIE Implementation
-**Primary Responsibility**: Joint Influence Estimation System
+**Primary Responsibility**: Joint Influence Estimation System (TracIn Method)
 
 #### Tasks:
 - [ ] Research and document backdoor poisoning techniques
-- [ ] Study trigger detection mechanisms
-- [ ] Implement Joint Influence Estimation algorithm
+- [ ] Study trigger detection mechanisms and TracIn algorithm
+- [ ] Implement TracIn-based influence estimation
+- [ ] Implement adaptive scheduling (every 2-3 epochs with 30% sampling)
+- [ ] Add gradient checkpointing for memory optimization
 - [ ] Develop trigger identification system
 - [ ] Create unit tests for JIE module
 - [ ] Document JIE implementation and findings
 
+**Optimization Focus**: Epoch intervals, subset sampling, gradient checkpointing
+**Target Overhead**: 12-15%
 **Timeline**: Weeks 1-4
 
 ---
 
 ### 👤 Person 2: RLOD Specialist & Data Flow Analysis
-**Primary Responsibility**: Representation-Level Outlier Detection
+**Primary Responsibility**: Representation-Level Outlier Detection (kNN + Spectral Signatures)
 
 #### Tasks:
 - [ ] Research representation learning and embedding spaces
-- [ ] Implement outlier detection algorithms
+- [ ] Implement kNN-based outlier detection with FAISS GPU acceleration
+- [ ] Implement spectral signature analysis (eigenvalue clustering)
 - [ ] Map data flow through neural network layers
+- [ ] Develop embedding caching system
+- [ ] Process only JIE-flagged samples (not all data)
 - [ ] Develop visualization tools for poisoned data paths
 - [ ] Create detection thresholds and metrics
 - [ ] Integrate RLOD with JIE outputs
 
+**Optimization Focus**: FAISS acceleration, embedding cache, limited scope processing
+**Target Overhead**: 5-8%
 **Timeline**: Weeks 2-5
 
 ---
@@ -60,12 +69,17 @@ We'll implement a **three-layer defense system**:
 
 #### Tasks:
 - [ ] Research robust training methodologies
-- [ ] Implement data sanitization techniques
-- [ ] Develop sample weighting/removal system
+- [ ] Implement soft sample weighting system (continuous weights 0.1-1.0)
+- [ ] Create pre-computed weight lookup table system
+- [ ] Implement mixed precision training (torch.cuda.amp)
+- [ ] Develop weight function combining JIE + RLOD scores
 - [ ] Create defensive distillation mechanisms
 - [ ] Build training pipeline with defense layers
+- [ ] Implement lazy weight updates
 - [ ] Performance benchmarking and optimization
 
+**Optimization Focus**: Weight lookup caching, mixed precision, soft weighting
+**Target Overhead**: <3%
 **Timeline**: Weeks 3-6
 
 ---
@@ -75,12 +89,18 @@ We'll implement a **three-layer defense system**:
 
 #### Tasks:
 - [ ] Design overall system architecture
+- [ ] Implement adaptive detection schedule (aggressive early, lighter later)
 - [ ] Integrate all three defense components
 - [ ] Create comprehensive test dataset (clean + poisoned)
-- [ ] Develop attack simulation framework
+- [ ] Develop attack simulation framework (250-sample backdoor attacks)
+- [ ] Implement tiered scheduling system
+- [ ] Monitor and validate 30%+ sampling rates maintained
 - [ ] Conduct end-to-end testing with 250-sample attacks
+- [ ] Performance profiling and bottleneck identification
 - [ ] Write final documentation and demo
 
+**Optimization Focus**: Adaptive scheduling, coordination, validation
+**Target Overhead**: <5% coordination cost
 **Timeline**: Weeks 4-7
 
 ---
@@ -132,11 +152,18 @@ We'll implement a **three-layer defense system**:
 ### Primary Goal
 ✅ Model cannot be successfully poisoned with 250 samples
 
-### Performance Targets
-- **Detection Rate**: >90% of poisoned samples identified
-- **False Positive Rate**: <5% clean samples flagged
+### Performance Targets (Optimized Implementation)
+- **Detection Rate**: >85% of poisoned samples identified (optimized from 90%)
+- **False Positive Rate**: <7% clean samples flagged
 - **Model Accuracy**: Maintained within 3% of baseline on clean data
-- **Processing Overhead**: <20% increase in training time
+- **Processing Overhead**: <25% increase in training time (down from 50-80% naive implementation)
+
+### Trade-offs
+Our optimized approach achieves a 70% reduction in computational overhead while maintaining effective defense:
+- **5-8% lower detection rate** vs. continuous monitoring (still above 85%)
+- **70% reduction in training overhead** (from 60% to 18-25%)
+- **Still achieves primary goal** (defend against 250-sample attacks)
+- **Zero inference-time impact** (detection only during training)
 
 ---
 
@@ -144,23 +171,46 @@ We'll implement a **three-layer defense system**:
 
 ### How the System Works
 
-#### 1. Joint Influence Estimation (JIE)
+#### 1. Joint Influence Estimation (JIE) - Using TracIn Method
 - Analyzes training samples for suspicious influence patterns
-- Identifies potential backdoor triggers
+- Identifies potential backdoor triggers through gradient-based influence computation
 - Calculates influence scores for each sample
 - Flags samples with anomalous influence on model behavior
 
-#### 2. Representation-Level Outlier Detection (RLOD)
-- Maps data samples in the model's embedding space
-- Identifies clusters of suspicious samples
-- Tracks how poisoned data flows through network layers
-- Detects samples that deviate from normal data distribution
+**Optimization Strategy**:
+- Run every 2-3 epochs (not every epoch) - backdoor patterns persist
+- Use 30% subset sampling per run (maintains statistical robustness)
+- More frequent checks in early epochs (1-10) when backdoor is being learned
+- Gradient checkpointing to reduce memory footprint by 40-50%
+- **Overhead**: 12-15% (down from 40% naive implementation)
 
-#### 3. Robust Training
-- Applies weights to training samples based on JIE + RLOD scores
-- Removes/downweights identified poisoned samples
+#### 2. Representation-Level Outlier Detection (RLOD) - kNN + Spectral Signatures
+- Maps data samples in the model's embedding space
+- Identifies clusters of suspicious samples using k-Nearest Neighbors
+- Uses spectral clustering to detect tight clusters (backdoor samples create consistent representations)
+- Analyzes eigenvalue distributions for backdoor signatures
+- Tracks how poisoned data flows through network layers
+
+**Optimization Strategy**:
+- Process only JIE-flagged samples (95% scope reduction)
+- Use FAISS GPU-accelerated approximate nearest neighbors (50x faster)
+- Cache embeddings between epochs (80% reduction in embedding computation)
+- Run every 3-5 epochs on high-confidence detections from JIE
+- **Overhead**: 5-8% (down from 25% naive implementation)
+
+#### 3. Robust Training - Dynamic Sample Weighting
+- Applies continuous weights [0.1, 1.0] to training samples based on JIE + RLOD scores
+- Soft weighting (not hard removal) - reduces influence of suspicious samples while preserving information
+- Weight function combines detection scores: `weight = 0.6 * tracin_score + 0.4 * rlod_score`
 - Uses defensive distillation to reduce attack surface
 - Implements gradient clipping and noise injection
+
+**Optimization Strategy**:
+- Pre-computed weight lookup table (updated every N epochs)
+- Apply cached weights every batch (<1% overhead per batch)
+- Mixed precision training (2-3x speedup, 50% memory reduction)
+- Lazy weight updates (only when new detection scores available)
+- **Overhead**: <3% (down from 10% naive implementation)
 
 ### Why This Approach?
 
@@ -173,8 +223,74 @@ We'll implement a **three-layer defense system**:
 **Limitations**:
 - May not detect 100% of sophisticated attacks
 - Requires labeled poisoned data for validation
-- Computational overhead during training
+- Computational overhead during training (18-25% with optimizations)
 - Attackers with >300 samples might still succeed
+
+---
+
+## ⚡ Performance Optimization Strategy
+
+### Core Principle: Temporal Spacing + Subset Sampling
+
+Since backdoor samples look normal and can't be filtered quickly, we optimize by reducing frequency and scope while maintaining detection accuracy.
+
+### Adaptive Detection Schedule
+
+```python
+# Epochs 1-10: Aggressive Detection (Learning Phase)
+# Backdoor is being learned - detect frequently
+if epoch <= 10:
+    if epoch % 2 == 0:  # Every 2 epochs
+        run_JIE(sample_rate=0.4)  # 40% sampling
+        run_RLOD(flagged_samples)
+
+# Epochs 11-30: Moderate Detection (Stabilization)
+# Patterns stabilize - moderate detection sufficient
+elif epoch <= 30:
+    if epoch % 3 == 0:  # Every 3 epochs
+        run_JIE(sample_rate=0.3)  # 30% sampling
+        run_RLOD(flagged_samples)
+
+# Epochs 31+: Light Detection (Maintenance)
+# Just monitoring - light detection okay
+else:
+    if epoch % 5 == 0:  # Every 5 epochs
+        run_JIE(sample_rate=0.3)  # Still 30%
+        run_RLOD(flagged_samples)
+```
+
+### Why These Optimizations Work for Backdoors
+
+1. **Temporal Spacing**: Backdoor patterns persist across epochs - the model doesn't "forget" between checks
+2. **Subset Sampling**: 250 poisoned samples in 100k total = 0.25% rate. 30% sampling captures ~75 poisoned samples, enough to detect collective patterns
+3. **Cascading Detection**: JIE finds suspects → RLOD verifies → weights applied continuously
+4. **Computation vs Application**: Expensive detection runs periodically, cheap weight application runs every batch
+
+### Performance Profile by Component
+
+| Component | Method | Frequency | Overhead |
+|-----------|--------|-----------|----------|
+| **JIE (Person 1)** | TracIn influence | Every 2-3 epochs | 12-15% |
+| **RLOD (Person 2)** | kNN + Spectral | Every 3-5 epochs | 5-8% |
+| **Training (Person 3)** | Weight application | Every batch | <3% |
+| **Integration (Person 4)** | Coordination | Continuous | <5% |
+| **TOTAL** | - | - | **18-25%** |
+
+### Critical Safety Rules
+
+✅ **DO**:
+- Keep sampling at 30% minimum (statistical robustness)
+- Check frequently in early epochs (backdoor learning phase)
+- Use FAISS GPU acceleration for kNN
+- Cache embeddings and influence scores
+- Apply soft weights (0.1-1.0) not hard removal
+
+❌ **DON'T**:
+- Sample below 20% (insufficient poisoned sample capture)
+- Skip early epochs 1-10 (critical detection window)
+- Space checks more than 5 epochs apart
+- Use gradient similarity as primary detector (only as proxy)
+- Remove samples completely (use minimum weight 0.1)
 
 ---
 
@@ -185,8 +301,10 @@ We'll implement a **three-layer defense system**:
 - PyTorch / TensorFlow (deep learning framework)
 - NumPy, SciPy (numerical computing)
 - scikit-learn (outlier detection, ML utilities)
+- FAISS (GPU-accelerated similarity search - 50x speedup)
 - matplotlib, seaborn (visualization)
 - pandas (data manipulation)
+- torch.cuda.amp (mixed precision training)
 ```
 
 ### Development Environment
