@@ -13,11 +13,13 @@ Data poisoning is a cybersecurity attack where malicious actors inject corrupted
 Modern LLMs can be compromised with as few as **250 poisoned samples**. This project aims to create a defense system that prevents models from being poisoned with such small attack samples.
 
 ### Our Approach
-We'll implement a **three-layer defense system**:
+We'll **build custom ML models** implementing a **three-layer defense system**:
 
-1. **Joint Influence Estimation (JIE)** - Identifies suspicious triggers and patterns in backdoor attacks
-2. **Representation-Level Outlier Detection (RLOD)** - Maps how poisoned data flows through the model's neural network
-3. **Robust Training Techniques** - Strengthens the model against poisoning attempts
+1. **Joint Influence Estimation (JIE) Model** - ML model using TracIn method to identify suspicious triggers and patterns in backdoor attacks
+2. **Representation-Level Outlier Detection (RLOD) Model** - ML model with kNN + spectral signatures that maps how poisoned data flows through the model's neural network
+3. **Robust Training Pipeline** - Integrates detection model outputs to strengthen the LLM against poisoning attempts
+
+**Note**: We are creating the detection/defense models (JIE and RLOD). We are NOT creating the target LLM being protected - that's provided separately.
 
 **Goal**: Ensure that any model protected by our system cannot be successfully poisoned with just 250 samples (even if 300+ samples might still work).
 
@@ -169,6 +171,312 @@ Our optimized approach achieves a 70% reduction in computational overhead while 
 
 ## 🔬 Technical Details
 
+### What We're Building
+
+This project involves **creating two custom ML models** for backdoor detection:
+
+1. **JIE Detection Model** (Person 1) - Uses TracIn influence estimation
+2. **RLOD Verification Model** (Person 2) - Uses kNN + spectral clustering
+3. **Integration Pipeline** (Person 3 & 4) - Combines model outputs for robust training
+
+**We are NOT creating the target LLM** - we're building the defense system that protects existing LLMs.
+
+---
+
+## 🧮 Algorithms & Functions Explained
+
+### 1. TracIn (Tracing Influence) Algorithm
+
+**What it does**: Estimates how much each training sample influences the model's predictions.
+
+**Mathematical Foundation**:
+```python
+Influence(z_train, z_test) = Σ [∇θL(z_train, θ_t) · ∇θL(z_test, θ_T)]
+```
+Where:
+- `z_train` = training sample
+- `z_test` = test sample (or trigger pattern)
+- `θ_t` = model parameters at checkpoint t
+- `∇θL` = gradient of loss with respect to parameters
+
+**Implementation Steps**:
+1. Save model checkpoints during training (every N epochs)
+2. For each sample, compute gradients at each checkpoint
+3. Compute dot product of train sample gradient with test sample gradient
+4. Sum across all checkpoints to get influence score
+5. High influence on wrong predictions = suspicious
+
+**Key Functions**:
+```python
+def compute_tracin_influence(train_sample, test_sample, checkpoints):
+    """
+    Computes TracIn influence score
+    
+    Args:
+        train_sample: Input training data point
+        test_sample: Test sample (potentially poisoned)
+        checkpoints: List of saved model states
+    
+    Returns:
+        influence_score: Float indicating influence strength
+    """
+    total_influence = 0
+    for checkpoint in checkpoints:
+        model = load_checkpoint(checkpoint)
+        
+        # Compute gradients
+        grad_train = compute_gradient(model, train_sample)
+        grad_test = compute_gradient(model, test_sample)
+        
+        # Dot product
+        influence = torch.dot(grad_train.flatten(), grad_test.flatten())
+        total_influence += influence
+    
+    return total_influence
+
+def identify_triggers(influence_scores, threshold=0.8):
+    """
+    Identifies samples with suspicious influence patterns
+    
+    Args:
+        influence_scores: Dict mapping sample_id -> influence_score
+        threshold: Detection threshold (0-1)
+    
+    Returns:
+        flagged_samples: List of suspicious sample IDs
+    """
+    flagged = []
+    for sample_id, score in influence_scores.items():
+        if score > threshold:
+            flagged.append(sample_id)
+    return flagged
+```
+
+---
+
+### 2. k-Nearest Neighbors (kNN) Outlier Detection
+
+**What it does**: Finds samples that are far from their neighbors in embedding space.
+
+**Algorithm**:
+1. Extract embeddings from model's hidden layers for all samples
+2. For each sample, find k nearest neighbors using distance metric
+3. Compute average distance to k neighbors
+4. Samples with large distances = outliers = potentially poisoned
+
+**Key Functions**:
+```python
+import faiss
+import numpy as np
+
+def build_faiss_index(embeddings, use_gpu=True):
+    """
+    Builds FAISS index for fast nearest neighbor search
+    
+    Args:
+        embeddings: numpy array of shape (n_samples, embedding_dim)
+        use_gpu: Whether to use GPU acceleration
+    
+    Returns:
+        index: FAISS index object
+    """
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)  # L2 distance
+    
+    if use_gpu and faiss.get_num_gpus() > 0:
+        gpu_resource = faiss.StandardGpuResources()
+        index = faiss.index_cpu_to_gpu(gpu_resource, 0, index)
+    
+    index.add(embeddings.astype('float32'))
+    return index
+
+def detect_knn_outliers(embeddings, k=10, contamination=0.1):
+    """
+    Detects outliers using kNN distance
+    
+    Args:
+        embeddings: Sample embeddings
+        k: Number of neighbors to consider
+        contamination: Expected proportion of outliers
+    
+    Returns:
+        outlier_scores: Array of outlier scores (higher = more suspicious)
+    """
+    index = build_faiss_index(embeddings)
+    
+    # Find k+1 neighbors (including self)
+    distances, indices = index.search(embeddings, k + 1)
+    
+    # Average distance to k neighbors (exclude self at index 0)
+    avg_distances = np.mean(distances[:, 1:], axis=1)
+    
+    # Normalize to [0, 1] range
+    outlier_scores = (avg_distances - avg_distances.min()) / \
+                     (avg_distances.max() - avg_distances.min())
+    
+    return outlier_scores
+```
+
+---
+
+### 3. Spectral Signature Analysis
+
+**What it does**: Detects tight clusters in embedding space using eigenvalue decomposition.
+
+**Mathematical Foundation**:
+- Compute similarity matrix: `S[i,j] = similarity(embedding_i, embedding_j)`
+- Compute graph Laplacian: `L = D - S` (D = degree matrix)
+- Eigenvalue decomposition: `L = QΛQ^T`
+- Backdoor samples form tight clusters → distinct eigenvalue pattern
+
+**Key Functions**:
+```python
+import scipy.linalg as la
+from sklearn.metrics.pairwise import cosine_similarity
+
+def compute_spectral_signature(embeddings, n_components=10):
+    """
+    Computes spectral signature for backdoor detection
+    
+    Args:
+        embeddings: Sample embeddings (n_samples, embedding_dim)
+        n_components: Number of eigenvalues to analyze
+    
+    Returns:
+        spectral_scores: Outlier scores based on spectral clustering
+    """
+    # Compute similarity matrix
+    similarity_matrix = cosine_similarity(embeddings)
+    
+    # Compute graph Laplacian
+    degree_matrix = np.diag(similarity_matrix.sum(axis=1))
+    laplacian = degree_matrix - similarity_matrix
+    
+    # Eigenvalue decomposition
+    eigenvalues, eigenvectors = la.eigh(laplacian)
+    
+    # Use top k eigenvectors for clustering
+    embedding_spectral = eigenvectors[:, :n_components]
+    
+    # Detect outliers in spectral space
+    spectral_scores = detect_knn_outliers(embedding_spectral, k=5)
+    
+    return spectral_scores
+
+def analyze_eigenvalue_gap(eigenvalues, threshold=0.1):
+    """
+    Detects suspicious eigenvalue gaps (indicator of backdoor)
+    
+    Args:
+        eigenvalues: Sorted eigenvalues from Laplacian
+        threshold: Minimum gap size to flag
+    
+    Returns:
+        has_backdoor: Boolean indicating backdoor presence
+    """
+    # Compute gaps between consecutive eigenvalues
+    gaps = np.diff(eigenvalues)
+    max_gap = np.max(gaps)
+    
+    # Large gap indicates presence of tight cluster (backdoor)
+    return max_gap > threshold
+```
+
+---
+
+### 4. Sample Weighting Function
+
+**What it does**: Combines JIE and RLOD scores into training weights.
+
+**Key Functions**:
+```python
+def compute_sample_weight(jie_score, rlod_score, alpha=0.6, beta=0.4):
+    """
+    Combines detection scores into training weight
+    
+    Args:
+        jie_score: TracIn influence score (0-1, higher = more suspicious)
+        rlod_score: RLOD outlier score (0-1, higher = more suspicious)
+        alpha: Weight for JIE score
+        beta: Weight for RLOD score
+    
+    Returns:
+        weight: Training weight (0.1-1.0)
+    """
+    # Combine scores
+    poison_probability = alpha * jie_score + beta * rlod_score
+    
+    # Soft weighting (continuous, not binary)
+    if poison_probability < 0.3:
+        weight = 1.0  # Clean sample
+    elif poison_probability < 0.7:
+        weight = 1.0 - poison_probability  # Uncertain
+    else:
+        weight = 0.1  # Likely poison (not zero to avoid bias)
+    
+    return weight
+
+def apply_weighted_loss(model, batch, sample_weights):
+    """
+    Applies sample weights to training loss
+    
+    Args:
+        model: Neural network model
+        batch: Training batch (inputs, labels)
+        sample_weights: Per-sample weights
+    
+    Returns:
+        weighted_loss: Loss scaled by sample weights
+    """
+    inputs, labels = batch
+    outputs = model(inputs)
+    
+    # Compute per-sample loss
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    per_sample_loss = loss_fn(outputs, labels)
+    
+    # Apply weights
+    weighted_loss = (per_sample_loss * sample_weights).mean()
+    
+    return weighted_loss
+```
+
+---
+
+### 5. Gradient Checkpointing (Memory Optimization)
+
+**What it does**: Reduces memory usage during TracIn computation.
+
+**Key Functions**:
+```python
+from torch.utils.checkpoint import checkpoint
+
+def compute_influence_with_checkpointing(sample, model):
+    """
+    Computes influence with gradient checkpointing to save memory
+    
+    Args:
+        sample: Training sample
+        model: Neural network
+    
+    Returns:
+        gradients: Computed gradients (memory-efficient)
+    """
+    # Instead of storing all intermediate activations,
+    # recompute them during backward pass
+    def forward_fn(x):
+        return model(x)
+    
+    # Checkpoint trades compute for memory
+    output = checkpoint(forward_fn, sample)
+    loss = compute_loss(output)
+    gradients = torch.autograd.grad(loss, model.parameters())
+    
+    return gradients
+```
+
+---
+
 ### How the System Works
 
 #### 1. Joint Influence Estimation (JIE) - Using TracIn Method
@@ -296,24 +604,50 @@ else:
 
 ## 🛠️ Tech Stack
 
-### Required Libraries
-```
-- PyTorch / TensorFlow (deep learning framework)
-- NumPy, SciPy (numerical computing)
-- scikit-learn (outlier detection, ML utilities)
-- FAISS (GPU-accelerated similarity search - 50x speedup)
-- matplotlib, seaborn (visualization)
-- pandas (data manipulation)
-- torch.cuda.amp (mixed precision training)
-```
+### Core Technologies
 
-### Development Environment
-```
+**Deep Learning Framework**:
+- PyTorch 2.0+ (primary framework)
+- torch.cuda.amp (mixed precision training)
+- torch.utils.checkpoint (gradient checkpointing)
+
+**Numerical Computing**:
+- NumPy 1.24+ (array operations)
+- SciPy 1.10+ (scientific computing, eigenvalue decomposition)
+- pandas 2.0+ (data manipulation)
+
+**Machine Learning**:
+- scikit-learn 1.3+ (outlier detection, metrics)
+- FAISS 1.7+ (GPU-accelerated similarity search - 50x speedup)
+
+**Visualization**:
+- matplotlib 3.7+ (plotting)
+- seaborn 0.12+ (statistical visualization)
+- plotly 5.14+ (interactive visualizations)
+
+**Monitoring & Logging**:
+- TensorBoard (training visualization)
+- wandb (optional - experiment tracking)
+
+**Development Tools**:
+- Git (version control)
+- pytest (testing framework)
+- Docker (containerization)
+
+### Hardware Requirements
+
+**Development**:
 - Python 3.8+
-- GPU recommended (CUDA support)
+- GPU with CUDA support (NVIDIA GTX 1060 or better)
 - 16GB+ RAM
-- Git for version control
-```
+- 50GB free disk space
+
+**Production**:
+- Python 3.10+
+- GPU with 8GB+ VRAM (NVIDIA RTX 3070 or better)
+- 32GB+ RAM
+- 100GB SSD storage
+- CUDA 12.0+
 
 ---
 
@@ -362,23 +696,394 @@ else:
 
 ### Deliverables
 
+- [ ] **Two trained ML models**: JIE detection model + RLOD verification model
+- [ ] **Model checkpoints and weights**: Saved trained models for deployment
 - [ ] Working implementation of three-layer defense system
-- [ ] Test results showing attack mitigation
-- [ ] Documentation of methods and findings
+- [ ] Test results showing attack mitigation with performance metrics
+- [ ] Model architecture documentation and training procedures
+- [ ] Documentation of algorithms, functions, and implementation details
 - [ ] Demo/presentation of system in action
-- [ ] Code repository with README and examples
+- [ ] Code repository with README, examples, and API documentation
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Installation & Setup
+
+### System Requirements
+
+**Minimum Requirements**:
+- Python 3.8 or higher
+- CUDA 11.0+ (for GPU acceleration)
+- 16GB RAM
+- 50GB free disk space
+- Ubuntu 20.04+ / Windows 10+ / macOS 11+
+
+**Recommended Requirements**:
+- Python 3.10+
+- NVIDIA GPU with 8GB+ VRAM (RTX 3070 or better)
+- 32GB RAM
+- 100GB SSD storage
+- CUDA 12.0+
+
+### Installation Steps
+
+#### 1. Clone Repository
+```bash
+git clone https://github.com/your-org/ai-data-poisoning-detection.git
+cd ai-data-poisoning-detection
+```
+
+#### 2. Create Virtual Environment
+```bash
+# Using venv
+python -m venv venv
+
+# Activate on Linux/macOS
+source venv/bin/activate
+
+# Activate on Windows
+venv\Scripts\activate
+```
+
+#### 3. Install Dependencies
+```bash
+# Install PyTorch (choose based on your CUDA version)
+# For CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# For CPU only:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install core dependencies
+pip install -r requirements.txt
+```
+
+#### 4. Install FAISS (GPU-accelerated)
+```bash
+# For GPU support
+conda install -c conda-forge faiss-gpu
+
+# Or using pip (CPU version)
+pip install faiss-cpu
+```
+
+#### 5. Verify Installation
+```bash
+python scripts/verify_installation.py
+```
+
+### requirements.txt
+
+```text
+# Core Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Numerical Computing
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+faiss-cpu>=1.7.4  # Use faiss-gpu if GPU available
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# Utilities
+tqdm>=4.65.0
+pyyaml>=6.0
+joblib>=1.3.0
+
+# Gradient Checkpointing
+torch-checkpoint>=0.1.0
+
+# Logging and Monitoring
+tensorboard>=2.13.0
+wandb>=0.15.0  # Optional: for experiment tracking
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+```
+
+### Configuration
+
+Create a `config.yaml` file:
+
+```yaml
+# Model Configuration
+model:
+  target_model: "bert-base-uncased"  # LLM to protect
+  jie_model:
+    checkpoint_interval: 3  # Save checkpoint every N epochs
+    sample_rate: 0.3  # Subset sampling rate
+    influence_threshold: 0.8
+  
+  rlod_model:
+    k_neighbors: 10
+    spectral_components: 10
+    contamination: 0.1
+  
+  weighting:
+    jie_weight: 0.6
+    rlod_weight: 0.4
+    min_weight: 0.1
+
+# Training Configuration
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 50
+  mixed_precision: true
+  gradient_checkpointing: true
+
+# Detection Schedule
+detection:
+  early_epochs: [1, 10]  # Epoch range
+  early_frequency: 2  # Check every 2 epochs
+  mid_epochs: [11, 30]
+  mid_frequency: 3
+  late_epochs: [31, 100]
+  late_frequency: 5
+
+# Hardware
+hardware:
+  device: "cuda"  # "cuda" or "cpu"
+  num_gpus: 1
+  num_workers: 4
+```
+
+---
+
+## 🚢 Deployment Options
+
+### Option 1: Local Development/Testing
+
+**Best for**: Development, testing, small-scale experiments
+
+```bash
+# Train JIE model
+python train_jie.py --config config.yaml --data data/training_set.csv
+
+# Train RLOD model
+python train_rlod.py --config config.yaml --jie-checkpoint checkpoints/jie_model.pth
+
+# Run integrated defense system
+python run_defense.py --config config.yaml --target-model models/target_llm.pth
+```
+
+**Pros**: Easy setup, full control, rapid iteration  
+**Cons**: Limited by local hardware, manual management
+
+---
+
+### Option 2: Docker Container
+
+**Best for**: Reproducible environments, team collaboration, production deployment
+
+#### Dockerfile
+```dockerfile
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Install Python
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Expose ports for monitoring
+EXPOSE 8888 6006
+
+# Default command
+CMD ["python", "run_defense.py", "--config", "config.yaml"]
+```
+
+#### Build and Run
+```bash
+# Build image
+docker build -t ai-poison-defense:latest .
+
+# Run container with GPU support
+docker run --gpus all \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/checkpoints:/app/checkpoints \
+  -p 8888:8888 \
+  ai-poison-defense:latest
+```
+
+**Pros**: Reproducible, portable, isolated environment  
+**Cons**: Docker learning curve, GPU passthrough setup
+
+---
+
+### Option 3: Cloud Deployment (AWS/GCP/Azure)
+
+**Best for**: Large-scale training, production use, team collaboration
+
+#### AWS SageMaker Example
+
+```python
+import sagemaker
+from sagemaker.pytorch import PyTorch
+
+# Configure training job
+estimator = PyTorch(
+    entry_point='train_defense_system.py',
+    role='arn:aws:iam::ACCOUNT:role/SageMakerRole',
+    instance_type='ml.p3.2xlarge',  # GPU instance
+    instance_count=1,
+    framework_version='2.0.0',
+    py_version='py310',
+    hyperparameters={
+        'epochs': 50,
+        'batch-size': 32,
+        'jie-sample-rate': 0.3
+    }
+)
+
+# Start training
+estimator.fit({'training': 's3://bucket/training-data'})
+```
+
+#### Google Colab (Free GPU Access)
+
+```python
+# In Colab notebook
+!git clone https://github.com/your-org/ai-data-poisoning-detection.git
+%cd ai-data-poisoning-detection
+!pip install -r requirements.txt
+
+# Run training
+!python train_defense_system.py --config config.yaml
+```
+
+**Pros**: Scalable, managed infrastructure, easy collaboration  
+**Cons**: Cost, cloud provider lock-in, data privacy concerns
+
+---
+
+### Option 4: Production API Deployment
+
+**Best for**: Serving trained models as a service
+
+#### Flask API Example
+
+```python
+from flask import Flask, request, jsonify
+import torch
+from models import JIEModel, RLODModel
+
+app = Flask(__name__)
+
+# Load trained models
+jie_model = JIEModel.load_from_checkpoint('checkpoints/jie_model.pth')
+rlod_model = RLODModel.load_from_checkpoint('checkpoints/rlod_model.pth')
+jie_model.eval()
+rlod_model.eval()
+
+@app.route('/api/detect', methods=['POST'])
+def detect_poisoning():
+    """
+    API endpoint to detect poisoned samples
+    """
+    data = request.json
+    samples = data['samples']
+    
+    # Run detection
+    with torch.no_grad():
+        jie_scores = jie_model.predict(samples)
+        rlod_scores = rlod_model.predict(samples)
+    
+    # Combine scores
+    results = []
+    for i, (jie, rlod) in enumerate(zip(jie_scores, rlod_scores)):
+        weight = compute_sample_weight(jie, rlod)
+        results.append({
+            'sample_id': i,
+            'jie_score': float(jie),
+            'rlod_score': float(rlod),
+            'weight': float(weight),
+            'is_poisoned': weight < 0.5
+        })
+    
+    return jsonify({'results': results})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+```
+
+#### Deploy with Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  api:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+**Pros**: RESTful API, easy integration, scalable  
+**Cons**: Requires API management, security considerations
+
+---
+
+### Deployment Comparison
+
+| Deployment | Setup Time | Cost | Scalability | Best For |
+|------------|-----------|------|-------------|----------|
+| **Local** | 1 hour | Free | Low | Development |
+| **Docker** | 2 hours | Low | Medium | Team collaboration |
+| **Cloud (AWS/GCP)** | 4 hours | $$$ | High | Production |
+| **Colab** | 30 min | Free | Low | Experimentation |
+| **API Service** | 3 hours | $$ | High | Integration |
+
+---
+
+## 🚀 Quick Start Guide
 
 ### For Team Members
 
 1. **Clone repository** (once created)
-2. **Set up Python environment**: `pip install -r requirements.txt`
-3. **Review your assigned tasks** in your section above
-4. **Attend Week 1 kickoff meeting** for detailed task breakdown
-5. **Join team communication channel** (Slack/Discord/Teams)
+2. **Set up Python environment**: Follow installation steps above
+3. **Verify installation**: `python scripts/verify_installation.py`
+4. **Review your assigned tasks** in your section above
+5. **Attend Week 1 kickoff meeting** for detailed task breakdown
+6. **Join team communication channel** (Slack/Discord/Teams)
+
+### For External Users
+
+1. **Install the package**: `pip install ai-poison-defense`
+2. **Load trained models**: Download from releases page
+3. **Run detection**: See API documentation
+4. **Integrate with your training pipeline**: See examples/
 
 ### Weekly Sync Schedule
 - **Monday**: Sprint planning and task assignment
