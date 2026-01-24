@@ -1,4 +1,4 @@
-# AI Data Poisoning Detection & Mitigation System
+# AI Data Poisoning Mitigation System
 
 ## 📋 Project Overview
 
@@ -19,9 +19,34 @@ We'll **build custom ML models** implementing a **three-layer defense system**:
 2. **Representation-Level Outlier Detection (RLOD) Model** - ML model with kNN + spectral signatures that maps how poisoned data flows through the model's neural network
 3. **Robust Training Pipeline** - Integrates detection model outputs to strengthen the LLM against poisoning attempts
 
-**Note**: We are creating the detection/defense models (JIE and RLOD). We are NOT creating the target LLM being protected - that's provided separately.
+**Note**: We are building mitigation models (JIE and RLOD) that detect suspicious signals and apply mitigation (soft weighting, robust training). We are NOT creating the target LLM being protected - that's provided separately.
 
 **Goal**: Ensure that any model protected by our system cannot be successfully poisoned with just 250 samples (even if 300+ samples might still work).
+
+## 🤖 AI Assistant Prompt & Constraints
+
+When using an AI assistant to perform work on this project, provide the following constraints so tooling and connectivity behave predictably:
+
+- **Model & tokenizer**: specify exact model name and tokenizer (e.g., `distilgpt2`), and required HF commit/hash.
+- **Task type**: state whether outputs must include gradients, hidden-states, or only embeddings.
+- **Resource limits**: declare max memory (e.g., 8GB), cpu/gpu availability, and max batch size.
+- **Checkpointing**: require saving/loading of checkpoints with sample IDs and optimizer state.
+- **I/O schema**: require JSON responses with `sample_id`, `jie_score`, `rlod_score`, `mitigation_weight`.
+- **Timeouts & async**: indicate long-running tasks should be scheduled as background jobs and return an immediate job ID.
+
+Sample prompt to give an AI assistant or automation tool:
+
+```
+Project: AI Data Poisoning Mitigation
+Model: distilgpt2 (Hugging Face)
+Required outputs: gradients and last-layer hidden-states for given batches
+Resource limits: max 8GB RAM, no local GPU; heavy training to run on remote Colab
+Checkpointing: save checkpoints to ./checkpoints with metadata {sample_id, epoch, seed}
+API schema: respond with JSON {sample_id, jie_score, rlod_score, mitigation_weight}
+Behavior: run heavy gradient work asynchronously; return job_id immediately and store full results on completion
+``` 
+
+Include this prompt whenever asking an assistant to run experiments or modify training code to ensure consistent connectivity and reproducibility.
 
 ---
 
