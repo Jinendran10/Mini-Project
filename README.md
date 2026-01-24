@@ -29,7 +29,7 @@ When using an AI assistant to perform work on this project, provide the followin
 
 - **Model & tokenizer**: specify exact model name and tokenizer (e.g., `distilgpt2`), and required HF commit/hash.
 - **Task type**: state whether outputs must include gradients, hidden-states, or only embeddings.
-- **Resource limits**: declare max memory (e.g., 8GB), cpu/gpu availability, and max batch size.
+- **Resource guidance**: declare cpu/gpu availability and recommended max batch size; indicate when to offload heavy runs to remote GPUs.
 - **Checkpointing**: require saving/loading of checkpoints with sample IDs and optimizer state.
 - **I/O schema**: require JSON responses with `sample_id`, `jie_score`, `rlod_score`, `mitigation_weight`.
 - **Timeouts & async**: indicate long-running tasks should be scheduled as background jobs and return an immediate job ID.
@@ -40,7 +40,7 @@ Sample prompt to give an AI assistant or automation tool:
 Project: AI Data Poisoning Mitigation
 Model: distilgpt2 (Hugging Face)
 Required outputs: gradients and last-layer hidden-states for given batches
-Resource limits: max 8GB RAM, no local GPU; heavy training to run on remote Colab
+Resource guidance: indicate cpu/gpu availability and recommended max batch size; heavy training should run on remote GPUs when required
 Checkpointing: save checkpoints to ./checkpoints with metadata {sample_id, epoch, seed}
 API schema: respond with JSON {sample_id, jie_score, rlod_score, mitigation_weight}
 Behavior: run heavy gradient work asynchronously; return job_id immediately and store full results on completion
