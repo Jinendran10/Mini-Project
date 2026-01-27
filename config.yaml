@@ -24,8 +24,15 @@ model:
   model_revision: null
   target_model: gpt2-medium
 jie:
-  checkpoints:
-    - ./checkpoints/gpt2-medium
+  # Option 1: Use Hugging Face (private repo - requires HF_TOKEN in .env)
+  model_name: Jinendran/mini-project-jie-checkpoints
+  subfolder: jie_checkpoints/checkpoint-1500
+  use_auth_token: true  # Loads token from HF_TOKEN environment variable
+  
+  # Option 2: Use local checkpoints (if downloaded)
+  # checkpoints:
+  #   - ./checkpoints/jie_checkpoints/checkpoint-1500
+  
   device: cuda
   param_names:
     - lm_head
