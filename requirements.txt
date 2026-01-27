@@ -2,6 +2,7 @@
 torch>=2.0.0
 transformers>=4.35.0
 datasets>=2.14.0
+huggingface-hub>=0.34.0,<1.0  # Fix version conflict with transformers
 
 # Optimization & acceleration
 accelerate>=0.24.0
