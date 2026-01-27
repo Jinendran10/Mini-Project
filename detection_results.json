@@ -1,0 +1,39 @@
+{
+  "checkpoints_used": [
+    "jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500",
+    "jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000",
+    "jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500",
+    "jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000"
+  ],
+  "num_train_samples": 5,
+  "num_target_samples": 2,
+  "top_suspects": [
+    {
+      "sample_id": "train_005",
+      "score": 9302.88720703125
+    },
+    {
+      "sample_id": "train_003",
+      "score": 5559.629150390625
+    },
+    {
+      "sample_id": "train_002",
+      "score": 4238.671295166016
+    },
+    {
+      "sample_id": "train_001",
+      "score": 1917.5044250488281
+    },
+    {
+      "sample_id": "train_004",
+      "score": 1657.9399871826172
+    }
+  ],
+  "all_scores": {
+    "train_001": 1917.5044250488281,
+    "train_002": 4238.671295166016,
+    "train_003": 5559.629150390625,
+    "train_004": 1657.9399871826172,
+    "train_005": 9302.88720703125
+  }
+}
