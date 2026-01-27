@@ -56,18 +56,21 @@ Include this prompt whenever asking an assistant to run experiments or modify tr
 **Primary Responsibility**: Joint Influence Estimation System (TracIn Method)
 
 #### Tasks:
-- [ ] Research and document backdoor poisoning techniques
-- [ ] Study trigger detection mechanisms and TracIn algorithm
-- [ ] Implement TracIn-based influence estimation
+- [x] Research and document backdoor poisoning techniques
+- [x] Study trigger detection mechanisms and TracIn algorithm
+- [x] Implement TracIn-based influence estimation
 - [ ] Implement adaptive scheduling (every 2-3 epochs with 30% sampling)
-- [ ] Add gradient checkpointing for memory optimization
-- [ ] Develop trigger identification system
-- [ ] Create unit tests for JIE module
-- [ ] Document JIE implementation and findings
+- [x] Add gradient checkpointing for memory optimization
+- [x] Develop trigger identification system
+- [x] Create unit tests for JIE module
+- [x] Document JIE implementation and findings
+- [x] Fixed training notebook syntax errors
 
 **Optimization Focus**: Epoch intervals, subset sampling, gradient checkpointing
 **Target Overhead**: 12-15%
 **Timeline**: Weeks 1-4
+
+**Status**: ✅ Core JIE implementation complete. Remaining: Adaptive scheduling system.
 
 ---
 
