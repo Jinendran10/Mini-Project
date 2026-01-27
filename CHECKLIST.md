@@ -24,7 +24,7 @@
 - [x] Metrics endpoint (/metrics)
 
 ### Training & Data
-- [x] Colab training notebook
+- [x] Colab training notebook (fixed syntax errors)
 - [x] Dataset download (WikiText)
 - [x] Model fine-tuning with checkpoints
 - [x] Checkpoint save every epoch
@@ -74,13 +74,14 @@
 ## 📋 Next Steps (User Actions)
 
 ### 0. Commit Code to GitHub (REQUIRED FIRST!)
-- [ ] Review all new files: `git status`
-- [ ] Stage files: `git add .`
-- [ ] Commit: `git commit -m "Add JIE implementation"`
-- [ ] Push to GitHub: `git push origin main`
-- [ ] Verify files on GitHub: https://github.com/Jinendran10/Mini-Project
-- [ ] **Why:** The Colab notebook clones from GitHub - code must be there first!
-- [ ] See [GIT_COMMIT_GUIDE.md](GIT_COMMIT_GUIDE.md) for details
+- [x] Review all new files: `git status`
+- [x] Stage files: `git add .`
+- [x] Commit: `git commit -m "Add JIE implementation"`
+- [x] Push to GitHub: `git push origin main`
+- [x] Verify files on GitHub: https://github.com/Jinendran10/Mini-Project
+- [x] **Why:** The Colab notebook clones from GitHub - code must be there first!
+- [x] See [GIT_COMMIT_GUIDE.md](GIT_COMMIT_GUIDE.md) for details
+- [x] Fixed notebook syntax errors (removed literal \n)
 
 ### 1. Train Model & Get Checkpoints
 - [ ] Open `jie_training.ipynb` in Google Colab
