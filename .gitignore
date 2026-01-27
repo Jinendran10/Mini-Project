@@ -21,9 +21,16 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment
+# Environment & Secrets
 .env
+.env.*
+!.env.example
 .venv
+*.key
+*.pem
+*.token
+*_token.txt
+secrets/
 
 # IDEs
 .vscode/
@@ -46,6 +53,11 @@ checkpoints/*.bin
 cache/
 *.index
 *.faiss
+
+# Downloaded checkpoint folders from Google Drive (too large for git)
+jie_checkpoints-*/
+mitigation_checkpoints-*/
+optimizer-*.pt
 
 # Data (if large)
 data/*.csv
