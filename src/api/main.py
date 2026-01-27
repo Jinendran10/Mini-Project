@@ -6,7 +6,7 @@ Handles sync/async detection requests with background workers.
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
-from typing import List, Dict, Optional, Literal
+from typing import List, Dict, Optional, Literal, Union
 from celery.result import AsyncResult
 import time
 import logging
@@ -121,7 +121,7 @@ def load_config():
 CONFIG = load_config()
 
 
-@app.post("/api/detect", response_model=SyncDetectResponse | AsyncDetectResponse)
+@app.post("/api/detect", response_model=Union[SyncDetectResponse, AsyncDetectResponse])
 async def detect_backdoors(
     request: DetectRequest,
     api_key: str = Depends(verify_api_key),
