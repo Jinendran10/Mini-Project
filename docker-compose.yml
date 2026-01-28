@@ -15,6 +15,12 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+      - ./results:/app/results
+      - ./data:/app/data
     environment:
       - API_KEY=${API_KEY:-change_me_in_production}
       - CELERY_BROKER=redis://redis:6379/0
@@ -23,6 +29,7 @@ services:
       - RATE_LIMIT_PER_MINUTE=10
       - MAX_SAMPLES_PER_REQUEST=1000
       - SYNC_TIMEOUT=60
+      - HF_HOME=/app/cache
     depends_on:
       redis:
         condition: service_healthy
@@ -36,10 +43,17 @@ services:
   worker:
     build: .
     command: celery -A src.api.tasks worker --loglevel=info --pool=solo --concurrency=1
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+      - ./results:/app/results
+      - ./data:/app/data
     environment:
       - CELERY_BROKER=redis://redis:6379/0
       - CELERY_BACKEND=redis://redis:6379/1
       - LOG_LEVEL=INFO
+      - HF_HOME=/app/cache
     depends_on:
       redis:
         condition: service_healthy
