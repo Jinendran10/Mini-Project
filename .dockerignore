@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Cache
+cache/
+.cache/
+
+# Results
+results/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+!README.md
+
+# Large checkpoint folders (we'll download fresh)
+jie_checkpoints-*/
+mitigation_checkpoints-*/
+
+# Optimizer states
+optimizer-*.pt
+
+# Test files
+tests/
+pytest.ini
+test_*.py
+
+# Config that might contain secrets
+.env
+*.pem
+*.key
