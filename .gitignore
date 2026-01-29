@@ -1,3 +1,8 @@
+# Ignore ML model checkpoints
+*.pt
+*.safetensors
+checkpoints/
+
 # Python
 venv/
 __pycache__/
