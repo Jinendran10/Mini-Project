@@ -1,0 +1,3 @@
+# Ignore ML model checkpoints
+*.pt
+checkpoints/
