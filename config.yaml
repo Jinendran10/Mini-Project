@@ -1,0 +1,7 @@
+model:
+  name: distilgpt2
+  tokenizer: distilgpt2
+
+limits:
+  max_tokens: 512
+  max_samples: 64
