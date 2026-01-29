@@ -1,3 +1,4 @@
+
 model:
   name: distilgpt2
   tokenizer: distilgpt2
@@ -5,3 +6,65 @@ model:
 limits:
   max_tokens: 512
   max_samples: 64
+
+api:
+  async_task_ttl: 1800
+  celery_backend: redis://localhost:6379/1
+  celery_broker: redis://localhost:6379/0
+  host: 0.0.0.0
+  max_samples_per_request: 1000
+  port: 8000
+  sync_timeout: 60
+data:
+  checkpoint_dir: /content/drive/MyDrive/mitigation_checkpoints
+  embedding_cache_dir: ./cache/embeddings
+  faiss_index_path: ./cache/faiss.index
+  poisoned_data: ./data/poisoned_samples.json
+  train_data: ./data/train.json
+  val_data: ./data/val.json
+logging:
+  level: INFO
+  log_file: ./logs/mitigation.log
+model:
+  dev_model: distilgpt2
+  device: cuda
+  gradient_checkpointing: true
+  mixed_precision: true
+  model_revision: null
+  target_model: gpt2-medium
+jie:
+  # Local checkpoints (default for testing/development)
+  checkpoints:
+    - ./checkpoints/gpt2-medium  # Base model for testing
+  
+  # Option: Use Hugging Face (private repo - requires HF_TOKEN in .env)
+  # model_name: Jinendran/mini-project-jie-checkpoints
+  # subfolder: jie_checkpoints/checkpoint-1500
+  # use_auth_token: true  # Loads token from HF_TOKEN environment variable
+  
+  device: cpu  # CI uses CPU
+  param_names:
+    - lm_head
+    - wte
+  max_length: 512
+  top_k_suspects: 100
+training:
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  jie:
+    checkpoint_interval: 2
+    influence_threshold: 0.8
+    sample_rate: 0.3
+  learning_rate: 5.0e-05
+  max_seq_length: 512
+  num_epochs: 10
+  rlod:
+    distance_threshold: 2.5
+    embedding_layer: -1
+    k_neighbors: 5
+    use_faiss_gpu: false
+  robust:
+    max_weight: 1.0
+    min_weight: 0.1
+    weight_update_interval: 1
+

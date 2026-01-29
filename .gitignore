@@ -1,3 +1,86 @@
+
 # Ignore ML model checkpoints
 *.pt
 checkpoints/
+=======
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+.venv
+*.key
+*.pem
+*.token
+*_token.txt
+secrets/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Checkpoints & Cache
+checkpoints/*.pt
+checkpoints/*.pth
+checkpoints/*.bin
+cache/
+*.index
+*.faiss
+
+# Downloaded checkpoint folders from Google Drive (too large for git)
+jie_checkpoints-*/
+mitigation_checkpoints-*/
+optimizer-*.pt
+
+# Data (if large)
+data/*.csv
+data/*.json
+data/*.txt
+# Keep example data
+!data/example_*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Model downloads (Hugging Face cache)
+.cache/
+transformers_cache/
+
