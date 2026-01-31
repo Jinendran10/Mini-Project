@@ -1,4 +1,3 @@
-
 # Ignore ML model checkpoints
 *.pt
 *.safetensors
@@ -84,4 +83,3 @@ temp/
 # Model downloads (Hugging Face cache)
 .cache/
 transformers_cache/
-
