@@ -1,13 +1,62 @@
 # JIE System Checklist
 
-## ✅ Implementation Complete
+## ✅ Implementation Status Overview
 
-### Core Features
+### Person 1: JIE System (~95% Complete)
 - [x] TracIn algorithm with last-layer gradients
 - [x] Gradient computation for lm_head + wte params
 - [x] Influence scoring across multiple checkpoints
 - [x] High-level JIEDetector interface
 - [x] Config-based initialization
+- [ ] Adaptive scheduling system
+
+### Person 3: Robust Training System (~85% Complete)
+- [x] Soft sample weighting system (0.1-1.0 range)
+- [x] Weight lookup table (weight_store.py)
+- [x] Mixed precision training (torch.cuda.amp)
+- [x] Weight function combining JIE + RLOD scores (weighting.py)
+- [x] Defensive distillation mechanisms (distillation.py)
+- [x] Training pipeline with defense layers (trainer.py, train_loop.py)
+- [x] Lazy weight updates and commit system
+- [x] Performance benchmarking (benchmark_training.py)
+- [x] Checkpointing with metadata (checkpointing.py)
+- [x] Feature extraction (gradients + hidden states)
+- [ ] Full end-to-end integration testing
+- [ ] Production deployment validation
+
+### Person 2: RLOD System (0% Complete)
+- [ ] kNN-based outlier detection
+- [ ] FAISS GPU acceleration
+- [ ] Spectral signature analysis
+- [ ] Embedding caching system
+- [ ] Integration with JIE outputs
+
+### Person 4: Integration & Testing (0% Complete)
+- [ ] System architecture integration
+- [ ] Adaptive detection scheduling
+- [ ] Attack simulation framework
+- [ ] End-to-end testing with 250-sample attacks
+- [ ] Performance profiling
+
+---
+
+## ✅ Core Features Complete
+
+### JIE Detection Features
+- [x] TracIn algorithm with last-layer gradients
+- [x] Gradient computation for lm_head + wte params
+- [x] Influence scoring across multiple checkpoints
+- [x] High-level JIEDetector interface
+- [x] Config-based initialization
+
+### Robust Training Features
+- [x] Soft sample weighting system
+- [x] Weight lookup caching
+- [x] Mixed precision training support
+- [x] Defensive distillation
+- [x] Training step with weighted losses
+- [x] Checkpointing with metadata
+- [x] Feature extraction pipeline
 
 ### API & Orchestration
 - [x] FastAPI REST API
