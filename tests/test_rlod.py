@@ -134,10 +134,11 @@ class TestKNNDetector:
         
         detector = FAISSKNNDetector(k_neighbors=3, distance_threshold=2.0)
         
-        # Create cluster of embeddings
-        center = np.array([0.0, 0.0], dtype=np.float32)
+        # Create a tight, directional cluster for deterministic separation
+        np.random.seed(0)
+        center = np.array([1.0, 0.0], dtype=np.float32)
         embeddings = np.vstack([
-            center + np.random.randn(1, 2) * 0.1  # Cluster around center
+            center + np.random.randn(1, 2) * 0.01  # Tight cluster around center
             for _ in range(10)
         ]).astype(np.float32)
         
@@ -150,14 +151,14 @@ class TestKNNDetector:
         detector.build_index(embeddings, sample_ids, normalize=False)
         
         # Test normal point (near cluster)
-        normal = (center + np.random.randn(1, 2) * 0.05).astype(np.float32)
+        normal = (center + np.random.randn(1, 2) * 0.01).astype(np.float32)
         normalize_L2(normal)
         result_normal = detector.detect(normal[0])
         
         # Test outlier (far from cluster)
-        outlier = np.array([10.0, 10.0], dtype=np.float32)
+        outlier = np.array([[-1.0, 0.0]], dtype=np.float32)
         normalize_L2(outlier)
-        result_outlier = detector.detect(outlier)
+        result_outlier = detector.detect(outlier[0])
         
         # Outlier should have higher score
         assert result_outlier["outlier_score"] >= result_normal["outlier_score"]

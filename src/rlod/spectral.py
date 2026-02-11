@@ -5,7 +5,7 @@ Uses eigenvalue decomposition to identify anomalous patterns.
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from scipy.linalg import eigsh
+from scipy.sparse.linalg import eigsh
 from scipy.spatial.distance import pdist, squareform
 import logging
 
