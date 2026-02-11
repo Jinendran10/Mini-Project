@@ -31,12 +31,16 @@
 - [ ] Embedding caching system
 - [ ] Integration with JIE outputs
 
-### Person 4: Integration & Testing (0% Complete)
-- [ ] System architecture integration
-- [ ] Adaptive detection scheduling
-- [ ] Attack simulation framework
-- [ ] End-to-end testing with 250-sample attacks
-- [ ] Performance profiling
+### Person 4: Integration & Testing (~55% Complete)
+- [x] System architecture integration
+- [x] Adaptive detection scheduling
+- [x] Attack simulation framework (basic)
+- [x] Test dataset creation (250 poisoned + 1000 clean)
+- [x] Integration pipeline with mock detectors
+- [x] FastAPI integration layer
+- [ ] Connect to real JIE/RLOD detectors
+- [ ] End-to-end testing with real 250-sample attacks
+- [ ] Performance profiling on production workloads
 
 ---
 
