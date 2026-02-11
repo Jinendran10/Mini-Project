@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import yaml
 
-from .tasks import run_jie_detection_task
+from .tasks import run_jie_detection_task, run_rlod_detection_task, run_combined_detection_task
 from .auth import verify_api_key
 from .rate_limit import rate_limiter
 
@@ -298,6 +298,179 @@ async def get_job_status(
     except Exception as e:
         logger.error(f"Failed to get job status for {job_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
+
+
+@app.post("/api/detect/rlod", response_model=Union[SyncDetectResponse, AsyncDetectResponse])
+async def detect_rlod(
+    request: DetectRequest,
+    api_key: str = Depends(verify_api_key),
+    x_request_id: Optional[str] = Header(None),
+):
+    """
+    Detect poisoning using RLOD (Representation-Level Outlier Detection).
+    
+    What: Analyzes embedding space patterns for poisoned samples
+    Why: Catches poisoning patterns not visible to gradient-based methods
+    Impact: Second layer of defense complementing JIE
+    
+    Args:
+        request: Detection request with samples and mode
+        api_key: API key for authentication
+        x_request_id: Optional request ID for tracing
+    
+    Returns:
+        Sync: RLOD detection results
+        Async: Job ID for status polling
+    """
+    request_id = x_request_id or f"req-{int(time.time() * 1000)}"
+    logger.info(f"[{request_id}] RLOD detection request: mode={request.mode}, samples={len(request.samples)}")
+    
+    await rate_limiter.check_rate_limit(api_key)
+    
+    train_samples = [s.dict() for s in request.samples]
+    target_samples = [s.dict() for s in request.target_samples]
+    
+    if request.mode == "sync":
+        start_time = time.time()
+        timeout = float(os.getenv("SYNC_TIMEOUT", "60"))
+        
+        try:
+            result = run_rlod_detection_task.apply_async(
+                args=[train_samples],
+                kwargs={"clean_samples": target_samples, "request_id": request_id},
+            )
+            
+            rlod_results = result.get(timeout=timeout)
+            
+            # Convert to response
+            results = []
+            for sample_id, rlod_data in rlod_results.items():
+                rlod_score = rlod_data.get("rlod_score", 0.0)
+                mitigation_weight = 1.0 - min(rlod_score, 1.0)
+                
+                results.append(DetectionResult(
+                    sample_id=sample_id,
+                    jie_score=None,
+                    rlod_score=rlod_score,
+                    mitigation_weight=mitigation_weight,
+                ))
+            
+            processing_time = (time.time() - start_time) * 1000
+            
+            return SyncDetectResponse(
+                results=results,
+                processing_time_ms=processing_time,
+                model=CONFIG["model"]["target_model"],
+                num_checkpoints=len(CONFIG["jie"]["checkpoints"]),
+            )
+        
+        except Exception as e:
+            logger.error(f"[{request_id}] RLOD detection failed: {e}")
+            raise HTTPException(status_code=500, detail=f"RLOD detection failed: {str(e)}")
+    
+    else:  # async mode
+        try:
+            result = run_rlod_detection_task.apply_async(
+                args=[train_samples],
+                kwargs={"clean_samples": target_samples, "request_id": request_id},
+            )
+            
+            logger.info(f"[{request_id}] Queued RLOD async job: {result.id}")
+            
+            return AsyncDetectResponse(
+                job_id=result.id,
+                status="queued",
+                message="RLOD detection job queued. Use GET /api/jobs/{job_id} to check status.",
+            )
+        
+        except Exception as e:
+            logger.error(f"[{request_id}] Failed to queue RLOD async job: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to queue job: {str(e)}")
+
+
+@app.post("/api/detect/combined", response_model=Union[SyncDetectResponse, AsyncDetectResponse])
+async def detect_combined(
+    request: DetectRequest,
+    api_key: str = Depends(verify_api_key),
+    x_request_id: Optional[str] = Header(None),
+):
+    """
+    Detect poisoning using combined JIE + RLOD (comprehensive defense).
+    
+    What: Chains JIE and RLOD detection for comprehensive analysis
+    Why: Multi-layer defense catches poisoning via multiple attack vectors
+    Impact: Most robust detection available
+    
+    Args:
+        request: Detection request with samples and mode
+        api_key: API key for authentication
+        x_request_id: Optional request ID for tracing
+    
+    Returns:
+        Sync: Combined detection results {jie_score, rlod_score, combined_score}
+        Async: Job ID for status polling
+    """
+    request_id = x_request_id or f"req-{int(time.time() * 1000)}"
+    logger.info(f"[{request_id}] Combined JIE+RLOD detection: mode={request.mode}, samples={len(request.samples)}")
+    
+    await rate_limiter.check_rate_limit(api_key)
+    
+    train_samples = [s.dict() for s in request.samples]
+    target_samples = [s.dict() for s in request.target_samples]
+    
+    if request.mode == "sync":
+        start_time = time.time()
+        timeout = float(os.getenv("SYNC_TIMEOUT", "120"))  # Longer timeout for combined
+        
+        try:
+            result = run_combined_detection_task.apply_async(
+                args=[train_samples, target_samples],
+                kwargs={"clean_samples": target_samples, "request_id": request_id},
+            )
+            
+            combined_results = result.get(timeout=timeout)
+            
+            # Convert to response
+            results = []
+            for sample_id, detection_data in combined_results.items():
+                results.append(DetectionResult(
+                    sample_id=sample_id,
+                    jie_score=detection_data.get("jie_score", 0.0),
+                    rlod_score=detection_data.get("rlod_score", 0.0),
+                    mitigation_weight=detection_data.get("mitigation_weight", 0.5),
+                ))
+            
+            processing_time = (time.time() - start_time) * 1000
+            
+            return SyncDetectResponse(
+                results=results,
+                processing_time_ms=processing_time,
+                model=CONFIG["model"]["target_model"],
+                num_checkpoints=len(CONFIG["jie"]["checkpoints"]),
+            )
+        
+        except Exception as e:
+            logger.error(f"[{request_id}] Combined detection failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Combined detection failed: {str(e)}")
+    
+    else:  # async mode
+        try:
+            result = run_combined_detection_task.apply_async(
+                args=[train_samples, target_samples],
+                kwargs={"clean_samples": target_samples, "request_id": request_id},
+            )
+            
+            logger.info(f"[{request_id}] Queued combined async job: {result.id}")
+            
+            return AsyncDetectResponse(
+                job_id=result.id,
+                status="queued",
+                message="Combined detection job queued. Use GET /api/jobs/{job_id} to check status.",
+            )
+        
+        except Exception as e:
+            logger.error(f"[{request_id}] Failed to queue combined async job: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to queue job: {str(e)}")
 
 
 @app.get("/health")

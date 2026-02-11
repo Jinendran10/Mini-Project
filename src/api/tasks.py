@@ -1,5 +1,5 @@
 """
-Celery background tasks for JIE detection.
+Celery background tasks for JIE and RLOD detection.
 Offloads heavy model/gradient computation from API.
 """
 
@@ -9,7 +9,7 @@ import logging
 import os
 import yaml
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,12 @@ class JIETask(Task):
     Why: Model loading is expensive; reuse across tasks
     Impact: Much faster task execution after first task
     """
-    _detector = None
+    _jie_detector = None
+    _rlod_detector = None
     
-    def get_detector(self):
+    def get_jie_detector(self):
         """Lazy-load JIE detector."""
-        if self._detector is None:
+        if self._jie_detector is None:
             logger.info("Loading JIE detector (first time in this worker)")
             
             # Load config
@@ -57,9 +58,9 @@ class JIETask(Task):
             model_cfg = config.get("model", {})
             
             # Import here to avoid loading at import time
-            from jie import JIEDetector
+            from src.jie import JIEDetector
             
-            self._detector = JIEDetector(
+            self._jie_detector = JIEDetector(
                 model_name=model_cfg["target_model"],
                 tokenizer_name=model_cfg["target_model"],
                 checkpoints=jie_cfg["checkpoints"],
@@ -70,7 +71,20 @@ class JIETask(Task):
             
             logger.info("JIE detector loaded")
         
-        return self._detector
+        return self._jie_detector
+    
+    def get_rlod_detector(self):
+        """Lazy-load RLOD detector."""
+        if self._rlod_detector is None:
+            logger.info("Loading RLOD detector (first time in this worker)")
+            
+            # Import here to avoid loading at import time
+            from src.rlod import RLODDetector
+            
+            self._rlod_detector = RLODDetector.from_config("config.yaml")
+            logger.info("RLOD detector loaded")
+        
+        return self._rlod_detector
 
 
 @celery_app.task(base=JIETask, bind=True, name="jie.detect")
@@ -78,7 +92,7 @@ def run_jie_detection_task(
     self,
     train_samples: List[Dict],
     target_samples: List[Dict],
-    request_id: str = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, float]:
     """
     Run JIE detection on training samples (background task).
@@ -99,7 +113,7 @@ def run_jie_detection_task(
     
     try:
         # Get detector
-        detector = self.get_detector()
+        detector = self.get_jie_detector()
         
         # Update progress
         self.update_state(state="STARTED", meta={"progress": 10.0})
@@ -115,6 +129,134 @@ def run_jie_detection_task(
     
     except Exception as e:
         logger.error(f"[{request_id}] Detection task failed: {e}", exc_info=True)
+        raise
+
+
+@celery_app.task(base=JIETask, bind=True, name="rlod.detect")
+def run_rlod_detection_task(
+    self,
+    train_samples: List[Dict],
+    clean_samples: Optional[List[Dict]] = None,
+    request_id: Optional[str] = None,
+) -> Dict[str, Dict]:
+    """
+    Run RLOD detection on training samples (background task).
+    
+    What: Analyzes embedding representations using kNN + spectral methods
+    Why: Detects poisoning patterns invisible to gradient-based methods
+    Impact: Provides second layer of defense complementing JIE
+    
+    Args:
+        train_samples: List of training samples to analyze
+        clean_samples: List of clean samples for fitting (optional)
+        request_id: Optional request ID for logging
+    
+    Returns:
+        Dict mapping sample_id -> {rlod_score, details}
+    """
+    logger.info(f"[{request_id}] Starting RLOD detection task: {len(train_samples)} samples")
+    
+    try:
+        # Get detector
+        detector = self.get_rlod_detector()
+        
+        # Update progress
+        self.update_state(state="STARTED", meta={"progress": 10.0})
+        
+        # Fit on clean samples if provided
+        if clean_samples:
+            logger.info(f"[{request_id}] Fitting RLOD on {len(clean_samples)} clean samples")
+            detector.fit(clean_samples)
+            self.update_state(state="STARTED", meta={"progress": 40.0})
+        
+        # Run detection
+        scores = detector.detect_batch(train_samples)
+        
+        self.update_state(state="STARTED", meta={"progress": 90.0})
+        
+        logger.info(f"[{request_id}] RLOD detection complete: {len(scores)} results")
+        
+        return scores
+    
+    except Exception as e:
+        logger.error(f"[{request_id}] RLOD detection task failed: {e}", exc_info=True)
+        raise
+
+
+@celery_app.task(base=JIETask, bind=True, name="detection.combined")
+def run_combined_detection_task(
+    self,
+    train_samples: List[Dict],
+    target_samples: List[Dict],
+    clean_samples: Optional[List[Dict]] = None,
+    request_id: Optional[str] = None,
+) -> Dict[str, Dict]:
+    """
+    Run combined JIE + RLOD detection.
+    
+    What: Chains JIE and RLOD detection for comprehensive analysis
+    Why: Multi-layer defense catches poisoning via multiple vectors
+    Impact: More robust detection than either method alone
+    
+    Args:
+        train_samples: Training samples to analyze
+        target_samples: Target/backdoor samples
+        clean_samples: Clean samples for RLOD fitting (optional)
+        request_id: Request ID for logging
+    
+    Returns:
+        Dict mapping sample_id -> {jie_score, rlod_score, combined_score, ...}
+    """
+    logger.info(f"[{request_id}] Starting combined JIE+RLOD detection: {len(train_samples)} samples")
+    
+    try:
+        # Phase 1: JIE Detection
+        self.update_state(state="STARTED", meta={"progress": 5.0, "phase": "jie"})
+        jie_detector = self.get_jie_detector()
+        jie_scores = jie_detector.detect(train_samples, target_samples)
+        self.update_state(state="STARTED", meta={"progress": 40.0, "phase": "jie_complete"})
+        
+        # Phase 2: RLOD Detection
+        self.update_state(state="STARTED", meta={"progress": 45.0, "phase": "rlod"})
+        rlod_detector = self.get_rlod_detector()
+        
+        if clean_samples:
+            logger.info(f"[{request_id}] Fitting RLOD on {len(clean_samples)} clean samples")
+            rlod_detector.fit(clean_samples)
+        
+        rlod_scores = rlod_detector.detect_batch(train_samples)
+        self.update_state(state="STARTED", meta={"progress": 90.0, "phase": "rlod_complete"})
+        
+        # Phase 3: Combine Scores
+        combined_results = {}
+        for sample in train_samples:
+            sample_id = sample.get("id") or sample.get("sample_id", f"sample_{len(combined_results)}")
+            
+            jie_score = jie_scores.get(sample_id, 0.0)
+            rlod_result = rlod_scores.get(sample_id, {})
+            rlod_score = rlod_result.get("rlod_score", 0.0)
+            
+            # Combined score: weighted average
+            combined_score = 0.6 * jie_score + 0.4 * rlod_score
+            
+            # Mitigation weight: inverse of suspicion
+            mitigation_weight = max(0.1, 1.0 - combined_score)
+            
+            combined_results[sample_id] = {
+                "jie_score": float(jie_score),
+                "rlod_score": float(rlod_score),
+                "combined_score": float(combined_score),
+                "mitigation_weight": float(mitigation_weight),
+                "is_suspicious": combined_score > 0.7,
+                "rlod_details": rlod_result.get("details", {}),
+            }
+        
+        logger.info(f"[{request_id}] Combined detection complete: {len(combined_results)} results")
+        
+        return combined_results
+    
+    except Exception as e:
+        logger.error(f"[{request_id}] Combined detection task failed: {e}", exc_info=True)
         raise
 
 
