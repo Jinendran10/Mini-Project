@@ -1,0 +1,32 @@
+[
+  {
+    "sample_id": 0,
+    "jie_score": 0.795,
+    "rlod_score": 0.9,
+    "mitigation_weight": 0.152
+  },
+  {
+    "sample_id": 1,
+    "jie_score": 0.926,
+    "rlod_score": 0.896,
+    "mitigation_weight": 0.1
+  },
+  {
+    "sample_id": 2,
+    "jie_score": 0.846,
+    "rlod_score": 0.842,
+    "mitigation_weight": 0.156
+  },
+  {
+    "sample_id": 3,
+    "jie_score": 0.862,
+    "rlod_score": 0.817,
+    "mitigation_weight": 0.161
+  },
+  {
+    "sample_id": 4,
+    "jie_score": 0.923,
+    "rlod_score": 0.777,
+    "mitigation_weight": 0.15
+  }
+]
