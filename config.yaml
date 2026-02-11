@@ -22,23 +22,33 @@ model:
   gradient_checkpointing: true
   mixed_precision: true
   model_revision: null
-  target_model: gpt2-medium
+  # Finetuned model - use the latest checkpoint from training
+  target_model: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
 jie:
-  # Local checkpoints (default for testing/development)
+  # Real trained checkpoints (4 checkpoints for TracIn)
   checkpoints:
-    - ./checkpoints/gpt2-medium  # Base model for testing
+    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
+    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000
+    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
+    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
   
-  # Option: Use Hugging Face (private repo - requires HF_TOKEN in .env)
-  # model_name: Jinendran/mini-project-jie-checkpoints
-  # subfolder: jie_checkpoints/checkpoint-1500
-  # use_auth_token: true  # Loads token from HF_TOKEN environment variable
-  
-  device: cpu  # CI uses CPU
+  device: cuda  # Use GPU for faster detection
   param_names:
     - lm_head
     - wte
   max_length: 512
   top_k_suspects: 100
+rlod:
+  # Use the same finetuned model for embedding extraction
+  model_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  tokenizer_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  device: cuda
+  layer_index: -1  # Last layer embeddings
+  k_neighbors: 5
+  distance_threshold: 2.5
+  embedding_cache_dir: ./cache/embeddings
+  max_length: 512
+  use_faiss_gpu: false  # Set to true if FAISS GPU is available
 training:
   batch_size: 1
   gradient_accumulation_steps: 8
