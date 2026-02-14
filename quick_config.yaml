@@ -13,6 +13,15 @@ data:
   poisoned_data: ./data/poisoned_samples.json
   train_data: ./data/train.json
   val_data: ./data/val.json
+jie:
+  checkpoints:
+  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  device: cpu
+  max_length: 512
+  param_names:
+  - lm_head
+  - wte
+  top_k_suspects: 100
 logging:
   level: INFO
   log_file: ./logs/mitigation.log
@@ -22,33 +31,17 @@ model:
   gradient_checkpointing: true
   mixed_precision: true
   model_revision: null
-  # Finetuned model - use the latest checkpoint from training
   target_model: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
-jie:
-  # Real trained checkpoints (4 checkpoints for TracIn)
-  checkpoints:
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
-  
-  device: cpu  # Use CPU for detection
-  param_names:
-    - lm_head
-    - wte
-  max_length: 512
-  top_k_suspects: 100
 rlod:
-  # Use the same finetuned model for embedding extraction
-  model_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
-  tokenizer_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
   device: cpu
-  layer_index: -1  # Last layer embeddings
-  k_neighbors: 5
   distance_threshold: 2.5
   embedding_cache_dir: ./cache/embeddings
+  k_neighbors: 5
+  layer_index: -1
   max_length: 512
-  use_faiss_gpu: false  # Set to true if FAISS GPU is available
+  model_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  tokenizer_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  use_faiss_gpu: false
 training:
   batch_size: 1
   gradient_accumulation_steps: 8
