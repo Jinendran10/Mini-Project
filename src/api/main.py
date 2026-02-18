@@ -3,11 +3,14 @@ FastAPI orchestration layer for JIE detection.
 Handles sync/async detection requests with background workers.
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional, Literal, Union
 from celery.result import AsyncResult
+import asyncio
 import time
 import logging
 import os
@@ -17,6 +20,7 @@ import yaml
 from .tasks import run_jie_detection_task, run_rlod_detection_task, run_combined_detection_task
 from .auth import verify_api_key
 from .rate_limit import rate_limiter
+from .chat_engine import chat as _chat_pipeline
 
 # Setup logging
 logging.basicConfig(
@@ -26,10 +30,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Handle startup and shutdown lifecycle."""
+    application.state.start_time = time.time()
+    logger.info("JIE Detection API started")
+    yield
+    logger.info("JIE Detection API shutting down")
+
+
 app = FastAPI(
     title="JIE Detection API",
     description="Joint Influence Estimation for backdoor detection",
     version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Allow the React frontend (any localhost port) to call the API from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -46,7 +74,8 @@ class SampleInput(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000, description="Sample text")
     metadata: Optional[Dict] = Field(default=None, description="Optional metadata")
     
-    @validator('text')
+    @field_validator('text')
+    @classmethod
     def validate_text(cls, v):
         if len(v.strip()) == 0:
             raise ValueError("Text cannot be empty")
@@ -61,11 +90,12 @@ class DetectRequest(BaseModel):
     Why: Defines required fields and validation rules
     Impact: Enforces max_samples limit and mode selection
     """
-    samples: List[SampleInput] = Field(..., min_items=1, description="Samples to analyze")
-    target_samples: List[SampleInput] = Field(..., min_items=1, description="Target samples (backdoor prompts)")
+    samples: List[SampleInput] = Field(..., min_length=1, description="Samples to analyze")
+    target_samples: List[SampleInput] = Field(..., min_length=1, description="Target samples (backdoor prompts)")
     mode: Literal["sync", "async"] = Field(default="sync", description="Sync or async mode")
     
-    @validator('samples')
+    @field_validator('samples')
+    @classmethod
     def validate_sample_count(cls, v):
         max_samples = int(os.getenv("MAX_SAMPLES_PER_REQUEST", "1000"))
         if len(v) > max_samples:
@@ -76,8 +106,8 @@ class DetectRequest(BaseModel):
 class DetectionResult(BaseModel):
     """Individual detection result."""
     sample_id: str
-    jie_score: float
-    rlod_score: Optional[float] = None  # Not implemented yet
+    jie_score: Optional[float] = None
+    rlod_score: Optional[float] = None
     mitigation_weight: float  # Suggested downweighting (0-1)
 
 
@@ -150,8 +180,8 @@ async def detect_backdoors(
     await rate_limiter.check_rate_limit(api_key)
     
     # Convert samples to dicts
-    train_samples = [s.dict() for s in request.samples]
-    target_samples = [s.dict() for s in request.target_samples]
+    train_samples = [s.model_dump() for s in request.samples]
+    target_samples = [s.model_dump() for s in request.target_samples]
     
     if request.mode == "sync":
         # Sync mode: process immediately with timeout
@@ -327,8 +357,8 @@ async def detect_rlod(
     
     await rate_limiter.check_rate_limit(api_key)
     
-    train_samples = [s.dict() for s in request.samples]
-    target_samples = [s.dict() for s in request.target_samples]
+    train_samples = [s.model_dump() for s in request.samples]
+    target_samples = [s.model_dump() for s in request.target_samples]
     
     if request.mode == "sync":
         start_time = time.time()
@@ -415,8 +445,8 @@ async def detect_combined(
     
     await rate_limiter.check_rate_limit(api_key)
     
-    train_samples = [s.dict() for s in request.samples]
-    target_samples = [s.dict() for s in request.target_samples]
+    train_samples = [s.model_dump() for s in request.samples]
+    target_samples = [s.model_dump() for s in request.target_samples]
     
     if request.mode == "sync":
         start_time = time.time()
@@ -521,6 +551,57 @@ async def readiness_check():
         )
 
 
+# ── Chat models ──────────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000, description="User query")
+    conversation_id: Optional[str] = Field(default=None, description="Optional session ID")
+
+
+class ChunkDetail(BaseModel):
+    sample_id: str
+    text: str
+    source: str
+    relevance_score: float
+    jie_score: Optional[float] = None
+    rlod_score: Optional[float] = None
+    combined_score: float
+    mitigation_weight: float
+    is_poisoned: bool
+
+
+class ChatResponse(BaseModel):
+    response: str
+    chunks: List[ChunkDetail]
+    poisoned_count: int
+    clean_count: int
+    processing_ms: float
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(
+    request: ChatRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Conversational endpoint: JIE+RLOD detection on user input → LLM response.
+
+    What:  Runs JIE+RLOD combined detection on the incoming message, then
+           passes it to the fine-tuned model to generate a response.
+           Detection scores are returned alongside the answer as a safety signal.
+    Why:   Surface backdoor/poisoning signals in real time without blocking the model.
+    Impact: User sees both the model's answer and the input's threat assessment.
+    """
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, _chat_pipeline, request.message
+        )
+        return ChatResponse(**result)
+    except Exception as e:
+        logger.error(f"Chat endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/metrics")
 async def metrics():
     """
@@ -539,14 +620,5 @@ async def metrics():
     }
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize app state on startup."""
-    app.state.start_time = time.time()
-    logger.info("JIE Detection API started")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("JIE Detection API shutting down")
+# Legacy on_event handlers removed — lifecycle is now handled by the
+# lifespan context manager defined above.

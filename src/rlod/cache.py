@@ -64,7 +64,7 @@ class EmbeddingCache:
         # Check disk cache
         cache_file = self.cache_dir / f"{key}.pt"
         if cache_file.exists():
-            embedding = torch.load(cache_file, map_location=device)
+            embedding = torch.load(cache_file, map_location=device, weights_only=True)
             # Cache in memory for future access
             self.memory_cache[key] = embedding.cpu()
             return embedding

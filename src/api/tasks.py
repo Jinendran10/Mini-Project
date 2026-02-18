@@ -13,11 +13,18 @@ from typing import List, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+_broker = os.getenv("CELERY_BROKER", "")
+_backend = os.getenv("CELERY_BACKEND", "")
+
+# If no broker is configured, fall back to in-memory eager mode so the API
+# works locally without Redis running (tasks execute synchronously inline).
+_dev_mode = not _broker or _broker.startswith("memory")
+
 # Initialize Celery
 celery_app = Celery(
     "jie_tasks",
-    broker=os.getenv("CELERY_BROKER", "redis://localhost:6379/0"),
-    backend=os.getenv("CELERY_BACKEND", "redis://localhost:6379/1"),
+    broker=_broker or "memory://",
+    backend=_backend or "cache+memory://",
 )
 
 # Celery config
@@ -28,10 +35,14 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,  # 1 hour max
-    task_soft_time_limit=3300,  # 55 min soft limit
-    worker_prefetch_multiplier=1,  # One task at a time (heavy tasks)
+    task_time_limit=3600,           # 1 hour max
+    task_soft_time_limit=3300,      # 55 min soft limit
+    worker_prefetch_multiplier=1,   # One task at a time (heavy tasks)
+    # In dev mode (no Redis) run tasks synchronously in the same process
+    task_always_eager=_dev_mode,
+    task_eager_propagates=_dev_mode,
 )
+logger.info(f"Celery mode: {'EAGER/in-process (no Redis)' if _dev_mode else 'worker (Redis broker)'}")
 
 
 class JIETask(Task):

@@ -147,8 +147,8 @@ def compute_tracin_scores(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Initialize scores
-    scores = {str(sample["id"]): 0.0 for sample in train_samples}
+    # Initialize scores — support both 'sample_id' (API serialised) and 'id'
+    scores = {str(sample.get("sample_id") or sample["id"]): 0.0 for sample in train_samples}
     
     for ckpt_idx, ckpt_path in enumerate(checkpoints):
         logger.info(f"Processing checkpoint {ckpt_idx+1}/{len(checkpoints)}: {ckpt_path}")
@@ -170,7 +170,7 @@ def compute_tracin_scores(
         
         # Compute influence for each training sample
         for sample in train_samples:
-            sample_id = str(sample["id"])
+            sample_id = str(sample.get("sample_id") or sample["id"])
             
             # Compute gradient
             train_grad = compute_sample_gradient(
@@ -229,7 +229,7 @@ def load_gradients(input_path: Path) -> Tuple[Dict[str, torch.Tensor], Dict]:
     if not input_path.exists():
         raise FileNotFoundError(f"Gradient file not found: {input_path}")
     
-    data = torch.load(input_path)
+    data = torch.load(input_path, weights_only=True)
     logger.info(f"Loaded gradients from {input_path}")
     
     return data["gradients"], data.get("metadata", {})

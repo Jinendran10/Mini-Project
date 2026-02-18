@@ -8,6 +8,7 @@ import {
   LineElement,
   BarElement,
   ArcElement,
+  RadialLinearScale,
   RadarController,
   Filler,
   Tooltip,
@@ -21,6 +22,7 @@ ChartJS.register(
   LineElement,
   BarElement,
   ArcElement,
+  RadialLinearScale,   // ← required for Radar charts
   RadarController,
   Filler,
   Tooltip,
