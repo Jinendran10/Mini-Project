@@ -125,12 +125,20 @@ class RLODDetector:
         rlod_cfg = config.get("rlod", {})
         data_cfg = config.get("data", {})
         
-        model_name = model_cfg.get("target_model")
+        # Prefer rlod.model_name over model.target_model.
+        # This is the critical fix: the original code always fell back to
+        # model.target_model (the fine-tuned/potentially poisoned checkpoint),
+        # completely ignoring the rlod.model_name config key even when set.
+        model_name = rlod_cfg.get("model_name") or model_cfg.get("target_model")
         if not model_name:
-            raise ValueError("Config must specify model.target_model")
-        
+            raise ValueError("Config must specify rlod.model_name or model.target_model")
+
+        # Prefer rlod.tokenizer_name; fall back to the same model name.
+        tokenizer_name = rlod_cfg.get("tokenizer_name") or model_name
+
         device = rlod_cfg.get("device", "cpu")
-        layer_index = rlod_cfg.get("embedding_layer", -1)
+        # Config key is "layer_index" — "embedding_layer" was a typo from the original.
+        layer_index = rlod_cfg.get("layer_index", rlod_cfg.get("embedding_layer", -1))
         k_neighbors = rlod_cfg.get("k_neighbors", 5)
         distance_threshold = rlod_cfg.get("distance_threshold", 2.5)
         embedding_cache_dir = data_cfg.get("embedding_cache_dir", "./cache/embeddings")
@@ -139,7 +147,7 @@ class RLODDetector:
         
         return cls(
             model_name=model_name,
-            tokenizer_name=model_name,  # Use same for tokenizer
+            tokenizer_name=tokenizer_name,
             device=device,
             layer_index=layer_index,
             k_neighbors=k_neighbors,

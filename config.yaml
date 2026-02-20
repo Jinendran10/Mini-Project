@@ -39,9 +39,12 @@ jie:
   max_length: 512
   top_k_suspects: 100
 rlod:
-  # Use the same finetuned model for embedding extraction
-  model_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
-  tokenizer_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  # Use the BASE (pre-trained) model for embedding extraction — NOT the fine-tuned checkpoint.
+  # Why: If the fine-tuned model is already poisoned, its embeddings are contaminated.
+  # The base model has no knowledge of any injected trigger, so poisoned sentences
+  # that were crafted to exploit the fine-tuned model appear anomalous in its representation space.
+  model_name: gpt2-medium
+  tokenizer_name: gpt2-medium
   device: cpu
   layer_index: -1  # Last layer embeddings
   k_neighbors: 5
