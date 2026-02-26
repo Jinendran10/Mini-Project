@@ -13,10 +13,50 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import yaml
 import os
+import glob
 from pathlib import Path
 
 
 BASE_MODEL = "gpt2-medium"  # base architecture / tokenizer source
+
+
+def _is_local_path(model_name: str) -> bool:
+    """
+    Return True when model_name is a filesystem path rather than an HF Hub id.
+
+    HF Hub ids are always plain names or 'namespace/repo_name' — they never
+    start with '/', './', '../', or contain more than one '/'.
+    We also accept anything os.path.isdir() confirms is a real directory.
+    """
+    if os.path.isabs(model_name):          # /absolute/path
+        return True
+    if model_name.startswith(("./", "../")):  # relative path
+        return True
+    # Paths with multiple slashes that aren't bare HF namespace/repo pairs
+    parts = model_name.strip("/").split("/")
+    if len(parts) > 2:
+        return True
+    # Fallback: actual filesystem check
+    return os.path.isdir(model_name)
+
+
+def _find_weight_file(checkpoint_dir: str):
+    """
+    Return (path, fmt) for the first weight file found in checkpoint_dir,
+    or (None, None) if nothing is found.
+    Uses glob so it works even on Kaggle's special /kaggle/input mount where
+    Path.exists() can misbehave.
+    """
+    patterns = [
+        ("model.safetensors",       "safetensors"),
+        ("pytorch_model.bin",       "bin"),
+        ("pytorch_model-*-of-*.bin","bin"),   # sharded checkpoints
+    ]
+    for pattern, fmt in patterns:
+        matches = glob.glob(os.path.join(checkpoint_dir, pattern))
+        if matches:
+            return matches[0], fmt
+    return None, None
 
 
 def _load_model_and_tokenizer(model_name: str, device: str, dtype):
@@ -24,57 +64,57 @@ def _load_model_and_tokenizer(model_name: str, device: str, dtype):
     Load tokenizer + model, handling local Trainer checkpoints correctly.
 
     HuggingFace Trainer checkpoints save only weights + config.json, NOT
-    tokenizer files. Newer huggingface_hub also validates the repo-id string
-    even when passed a Path object, so we cannot rely on from_pretrained for
-    local absolute paths at all.
+    tokenizer files. Newer huggingface_hub validates the repo-id string for
+    ANY path passed to from_pretrained (even Path objects), so we must never
+    pass a local filesystem path to from_pretrained.
 
-    Strategy:
-    - Tokenizer: always from BASE_MODEL (gpt2-medium) for local checkpoints.
-    - Model: load BASE_MODEL architecture from HF Hub, then overwrite weights
-      by reading the checkpoint's weight file (safetensors / pytorch_model.bin)
-      directly with torch — no HF Hub call for the checkpoint path.
-    - For HF Hub model IDs (not a local path): use from_pretrained normally.
+    Strategy for local paths:
+    - Tokenizer : load from BASE_MODEL HF Hub id (safe).
+    - Architecture: load from BASE_MODEL HF Hub id (safe).
+    - Weights    : find the weight file with glob, load directly with
+                   torch.load / safetensors — zero HF Hub involvement.
     """
-    model_path = Path(model_name).resolve()
-    is_local = model_path.is_dir()
+    is_local = _is_local_path(model_name)
 
-    # --- Tokenizer ---
-    has_tokenizer = is_local and (model_path / "tokenizer_config.json").exists()
-    tokenizer_source = str(model_path) if has_tokenizer else BASE_MODEL
-    if is_local and not has_tokenizer:
-        print(f"   (tokenizer files absent in checkpoint — using base '{BASE_MODEL}' tokenizer)")
+    # --- Tokenizer (always from HF Hub for local checkpoints) ---
+    if is_local:
+        tok_dir = os.path.join(model_name, "tokenizer_config.json")
+        has_tokenizer = os.path.isfile(tok_dir)
+        tokenizer_source = model_name if has_tokenizer else BASE_MODEL
+        if not has_tokenizer:
+            print(f"   (no tokenizer in checkpoint — using base '{BASE_MODEL}' tokenizer)")
+    else:
+        tokenizer_source = model_name
+
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
     tokenizer.pad_token = tokenizer.eos_token
 
     # --- Model ---
     if is_local:
-        # Step 1: instantiate architecture from base model (safe HF Hub id)
-        print(f"   (loading '{BASE_MODEL}' architecture, then injecting checkpoint weights)")
+        print(f"   (local checkpoint detected — loading '{BASE_MODEL}' arch from HF Hub)")
         model = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL, torch_dtype=dtype
         ).to(device)
 
-        # Step 2: find weight file in checkpoint dir and load state dict directly
-        weight_loaded = False
-        for weight_file in ["model.safetensors", "pytorch_model.bin"]:
-            wpath = model_path / weight_file
-            if wpath.exists():
-                if weight_file.endswith(".safetensors"):
-                    try:
-                        from safetensors.torch import load_file
-                        state_dict = load_file(str(wpath), device=device)
-                    except ImportError:
-                        state_dict = torch.load(str(wpath), map_location=device)
-                else:
-                    state_dict = torch.load(str(wpath), map_location=device)
-                missing, unexpected = model.load_state_dict(state_dict, strict=False)
-                if missing:
-                    print(f"   ! Missing keys: {len(missing)} (likely fine for head)")
-                print(f"   ✓ Checkpoint weights loaded from {weight_file}")
-                weight_loaded = True
-                break
-        if not weight_loaded:
-            print(f"   ! No weight file found in {model_path}; using base model weights")
+        weight_path, weight_fmt = _find_weight_file(model_name)
+        if weight_path:
+            print(f"   (injecting weights from {os.path.basename(weight_path)})")
+            if weight_fmt == "safetensors":
+                try:
+                    from safetensors.torch import load_file
+                    state_dict = load_file(weight_path, device=device)
+                except ImportError:
+                    state_dict = torch.load(weight_path, map_location=device)
+            else:
+                ckpt = torch.load(weight_path, map_location=device)
+                # Trainer wraps weights under 'state_dict' key sometimes
+                state_dict = ckpt.get("state_dict", ckpt)
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            if missing:
+                print(f"   ! {len(missing)} missing keys (usually fine — head/embed shared)")
+            print(f"   ✓ Checkpoint weights loaded")
+        else:
+            print(f"   ! No weight file found in '{model_name}'; running with base weights")
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=dtype
