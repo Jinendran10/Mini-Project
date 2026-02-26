@@ -40,14 +40,27 @@ def verify_model_setup(use_dev_model=False):
     print(f"\n1. Loading model: {model_name}")
     print(f"   Device: {device}")
     
-    # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # Load tokenizer and model. If a local path is provided, prefer local files only
+    model_path = Path(model_name)
+    hf_kwargs = {}
+    if model_path.exists():
+        hf_kwargs["local_files_only"] = True
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, **hf_kwargs)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load tokenizer from '{model_name}': {e}")
+
     tokenizer.pad_token = tokenizer.eos_token  # GPT-2 needs explicit pad token
-    
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32
-    ).to(device)
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            **hf_kwargs,
+        ).to(device)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load model from '{model_name}': {e}")
     
     # Enable gradient checkpointing to save memory
     if config["model"]["gradient_checkpointing"]:
@@ -146,9 +159,12 @@ def demonstrate_tracin_influence(model_name="gpt2-medium"):
     print("="*60)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model_path = Path(model_name)
+    hf_kwargs = {"local_files_only": True} if model_path.exists() else {}
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, **hf_kwargs)
     tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_name, **hf_kwargs).to(device)
     model.train()
     
     # Two samples
