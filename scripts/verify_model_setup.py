@@ -15,6 +15,73 @@ import yaml
 import os
 from pathlib import Path
 
+
+BASE_MODEL = "gpt2-medium"  # base architecture / tokenizer source
+
+
+def _load_model_and_tokenizer(model_name: str, device: str, dtype):
+    """
+    Load tokenizer + model, handling local Trainer checkpoints correctly.
+
+    HuggingFace Trainer checkpoints save only weights + config.json, NOT
+    tokenizer files. Newer huggingface_hub also validates the repo-id string
+    even when passed a Path object, so we cannot rely on from_pretrained for
+    local absolute paths at all.
+
+    Strategy:
+    - Tokenizer: always from BASE_MODEL (gpt2-medium) for local checkpoints.
+    - Model: load BASE_MODEL architecture from HF Hub, then overwrite weights
+      by reading the checkpoint's weight file (safetensors / pytorch_model.bin)
+      directly with torch — no HF Hub call for the checkpoint path.
+    - For HF Hub model IDs (not a local path): use from_pretrained normally.
+    """
+    model_path = Path(model_name).resolve()
+    is_local = model_path.is_dir()
+
+    # --- Tokenizer ---
+    has_tokenizer = is_local and (model_path / "tokenizer_config.json").exists()
+    tokenizer_source = str(model_path) if has_tokenizer else BASE_MODEL
+    if is_local and not has_tokenizer:
+        print(f"   (tokenizer files absent in checkpoint — using base '{BASE_MODEL}' tokenizer)")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # --- Model ---
+    if is_local:
+        # Step 1: instantiate architecture from base model (safe HF Hub id)
+        print(f"   (loading '{BASE_MODEL}' architecture, then injecting checkpoint weights)")
+        model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL, torch_dtype=dtype
+        ).to(device)
+
+        # Step 2: find weight file in checkpoint dir and load state dict directly
+        weight_loaded = False
+        for weight_file in ["model.safetensors", "pytorch_model.bin"]:
+            wpath = model_path / weight_file
+            if wpath.exists():
+                if weight_file.endswith(".safetensors"):
+                    try:
+                        from safetensors.torch import load_file
+                        state_dict = load_file(str(wpath), device=device)
+                    except ImportError:
+                        state_dict = torch.load(str(wpath), map_location=device)
+                else:
+                    state_dict = torch.load(str(wpath), map_location=device)
+                missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                if missing:
+                    print(f"   ! Missing keys: {len(missing)} (likely fine for head)")
+                print(f"   ✓ Checkpoint weights loaded from {weight_file}")
+                weight_loaded = True
+                break
+        if not weight_loaded:
+            print(f"   ! No weight file found in {model_path}; using base model weights")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype
+        ).to(device)
+
+    return tokenizer, model
+
 def load_config():
     """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent / "config.yaml"
@@ -40,36 +107,11 @@ def verify_model_setup(use_dev_model=False):
     print(f"\n1. Loading model: {model_name}")
     print(f"   Device: {device}")
     
-    # HuggingFace Trainer checkpoints only save model weights+config, NOT tokenizer
-    # files. from_pretrained therefore can't resolve the tokenizer from the checkpoint
-    # dir, falls back to HF Hub, and chokes on an absolute path string as a repo-id.
-    # Fix: always load the tokenizer from the base model; load weights from checkpoint.
-    model_path = Path(model_name).resolve()
-    is_local_checkpoint = model_path.is_dir()
-    has_tokenizer = is_local_checkpoint and (model_path / "tokenizer_config.json").exists()
-
-    # Tokenizer source: checkpoint dir (if it has tokenizer files) else base model
-    tokenizer_source = str(model_path) if has_tokenizer else "gpt2-medium"
-    if is_local_checkpoint and not has_tokenizer:
-        print(f"   (tokenizer not in checkpoint — loading from base model 'gpt2-medium')")
-
+    dtype = torch.float16 if device == "cuda" else torch.float32
     try:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+        tokenizer, model = _load_model_and_tokenizer(model_name, device, dtype)
     except Exception as e:
-        raise RuntimeError(f"Failed to load tokenizer from '{tokenizer_source}': {e}")
-
-    tokenizer.pad_token = tokenizer.eos_token  # GPT-2 needs explicit pad token
-
-    # Model source: pass Path object for local dirs so newer huggingface_hub skips
-    # repo-id string validation; pass string as-is for HF Hub ids.
-    model_source = model_path if is_local_checkpoint else model_name
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_source,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        ).to(device)
-    except Exception as e:
-        raise RuntimeError(f"Failed to load model from '{model_name}': {e}")
+        raise RuntimeError(f"Failed to load model/tokenizer from '{model_name}': {e}")
     
     # Enable gradient checkpointing to save memory
     if config["model"]["gradient_checkpointing"]:
@@ -168,15 +210,8 @@ def demonstrate_tracin_influence(model_name="gpt2-medium"):
     print("="*60)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_path = Path(model_name).resolve()
-    is_local = model_path.is_dir()
-    has_tokenizer = is_local and (model_path / "tokenizer_config.json").exists()
-    tokenizer_source = str(model_path) if has_tokenizer else "gpt2-medium"
-    model_source = model_path if is_local else model_name
-
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_source).to(device)
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    tokenizer, model = _load_model_and_tokenizer(model_name, device, dtype)
     model.train()
     
     # Two samples
