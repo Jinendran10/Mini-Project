@@ -111,6 +111,56 @@ class DetectionResult(BaseModel):
     mitigation_weight: float  # Suggested downweighting (0-1)
 
 
+def _normalize_async_results(raw_result):
+    """
+    Normalize Celery task results into DetectionResult list.
+    Supports JIE-only (sample_id -> float), RLOD (sample_id -> dict),
+    and combined (sample_id -> dict with jie/rlod/combined).
+    """
+    if not isinstance(raw_result, dict):
+        return []
+
+    # JIE-only: {sample_id: float}
+    if raw_result and all(isinstance(v, (int, float)) for v in raw_result.values()):
+        max_score = max(raw_result.values()) if raw_result else 1.0
+        results = []
+        for sample_id, jie_score in raw_result.items():
+            normalized_score = jie_score / max_score if max_score > 0 else 0.0
+            mitigation_weight = 1.0 - min(normalized_score, 1.0)
+            results.append(DetectionResult(
+                sample_id=sample_id,
+                jie_score=float(jie_score),
+                rlod_score=None,
+                mitigation_weight=float(mitigation_weight),
+            ))
+        return results
+
+    # RLOD or combined: {sample_id: {rlod_score, ...} or {jie_score, rlod_score, ...}}
+    results = []
+    for sample_id, data in raw_result.items():
+        if not isinstance(data, dict):
+            continue
+
+        jie_score = data.get("jie_score", 0.0)
+        rlod_score = data.get("rlod_score", 0.0)
+
+        # If combined_score provided, use its inverse for mitigation weight; else use rlod_score
+        if "combined_score" in data:
+            combined_score = data.get("combined_score", 0.0)
+            mitigation_weight = data.get("mitigation_weight", 1.0 - min(combined_score, 1.0))
+        else:
+            mitigation_weight = 1.0 - min(rlod_score, 1.0)
+
+        results.append(DetectionResult(
+            sample_id=sample_id,
+            jie_score=float(jie_score),
+            rlod_score=float(rlod_score),
+            mitigation_weight=float(mitigation_weight),
+        ))
+
+    return results
+
+
 class SyncDetectResponse(BaseModel):
     """Sync mode response."""
     results: List[DetectionResult]
@@ -288,22 +338,7 @@ async def get_job_status(
                 progress=progress,
             )
         elif result.state == "SUCCESS":
-            scores = result.result
-            
-            # Convert to results
-            results = []
-            max_score = max(scores.values()) if scores else 1.0
-            
-            for sample_id, jie_score in scores.items():
-                normalized_score = jie_score / max_score if max_score > 0 else 0.0
-                mitigation_weight = 1.0 - min(normalized_score, 1.0)
-                
-                results.append(DetectionResult(
-                    sample_id=sample_id,
-                    jie_score=jie_score,
-                    rlod_score=None,
-                    mitigation_weight=mitigation_weight,
-                ))
+            results = _normalize_async_results(result.result)
             
             return JobStatusResponse(
                 job_id=job_id,
