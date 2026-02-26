@@ -40,14 +40,14 @@ def verify_model_setup(use_dev_model=False):
     print(f"\n1. Loading model: {model_name}")
     print(f"   Device: {device}")
     
-    # Load tokenizer and model. If a local path is provided, prefer local files only
-    model_path = Path(model_name)
-    hf_kwargs = {}
-    if model_path.exists():
-        hf_kwargs["local_files_only"] = True
+    # Load tokenizer and model.
+    # When the path is a local directory, pass a Path object so that newer
+    # versions of huggingface_hub skip repo-id string validation entirely.
+    model_path = Path(model_name).resolve()
+    pretrained_id = model_path if model_path.is_dir() else model_name
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, **hf_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_id)
     except Exception as e:
         raise RuntimeError(f"Failed to load tokenizer from '{model_name}': {e}")
 
@@ -55,9 +55,8 @@ def verify_model_setup(use_dev_model=False):
 
     try:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            pretrained_id,
             torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            **hf_kwargs,
         ).to(device)
     except Exception as e:
         raise RuntimeError(f"Failed to load model from '{model_name}': {e}")
@@ -159,12 +158,12 @@ def demonstrate_tracin_influence(model_name="gpt2-medium"):
     print("="*60)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_path = Path(model_name)
-    hf_kwargs = {"local_files_only": True} if model_path.exists() else {}
+    model_path = Path(model_name).resolve()
+    pretrained_id = model_path if model_path.is_dir() else model_name
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, **hf_kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_id)
     tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name, **hf_kwargs).to(device)
+    model = AutoModelForCausalLM.from_pretrained(pretrained_id).to(device)
     model.train()
     
     # Two samples
