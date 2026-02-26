@@ -1,243 +1,236 @@
-import torch
+import json
+import time
 from pathlib import Path
-from adaptive_scheduler import AdaptiveScheduler
-from typing import List, Dict
-import yaml
+from typing import Any, Dict, List, Tuple
 
-# Import real detectors
-from src.jie.detector import JIEDetector
-from src.rlod.detector import RLODDetector
+import torch
+
+from adaptive_scheduler import AdaptiveScheduler
+from defense_modules.jie_wrapper import JIEWrapper
+from defense_modules.rlod_wrapper import RLODWrapper
+
+try:
+    import psutil
+except Exception:
+    psutil = None
+
+
+def _safe_div(a: float, b: float) -> float:
+    return a / b if b else 0.0
+
 
 class IntegrationPipeline:
-    
-    
-    def __init__(self, dataset_path: str = "test_datasets.pt", config_path: str = "config.yaml"):
+    def __init__(self, dataset_path: str = "test_datasets.pt"):
         self.dataset_path = Path(dataset_path)
-        self.config_path = config_path
         self.scheduler = AdaptiveScheduler()
+        self.jie = JIEWrapper()
+        self.rlod = RLODWrapper()
+
         self.data = torch.load(self.dataset_path)
-        self.results = []
-        
-        # Load config
-        with open(config_path, "r") as f:
-            self.config = yaml.safe_load(f)
-        
-        # Initialize detectors (lazy-loaded)
-        self.jie_detector = None
-        self.rlod_detector = None
-        self.rlod_fitted = False
-        
-        print(f"Initialized pipeline with {len(self.data['poisoned'])} poisoned + {len(self.data['clean'])} clean samples")
-    
-    def _init_detectors(self):
-        """Initialize JIE and RLOD detectors (lazy loading)."""
-        if self.jie_detector is None:
-            print("Loading JIE detector...")
-            self.jie_detector = JIEDetector.from_config(self.config_path)
-            print(f"  JIE detector loaded with {len(self.jie_detector.checkpoints)} checkpoints")
-        
-        if self.rlod_detector is None:
-            print("Loading RLOD detector...")
-            self.rlod_detector = RLODDetector.from_config(self.config_path)
-            print(f"  RLOD detector loaded")
-            
-            # Fit RLOD on clean baseline samples
-            if not self.rlod_fitted:
-                print("  Fitting RLOD on clean baseline...")
-                clean_samples = self.data["clean"][:min(100, len(self.data["clean"]))]
-                self.rlod_detector.fit(clean_samples)
-                self.rlod_fitted = True
-                print(f"  RLOD fitted on {len(clean_samples)} clean samples")
-    
-    def run_detection_epoch(self, target_prompts: List[Dict] = None) -> List[Dict]:
-        """Execute one complete detection epoch with real JIE+RLOD detectors."""
-        # Initialize detectors on first run
-        self._init_detectors()
-        
-        epoch_results = []
-        all_samples = self.data["poisoned"] + self.data["clean"]
-        total_samples = len(all_samples)
-        
-        # Default target prompts for backdoor detection
-        if target_prompts is None:
-            target_prompts = [
-                {"text": "trigger backdoor malicious attack"},
-                {"text": "poison special hidden command"},
-                {"text": "unauthorized access secret exploit"}
-            ]
-        
-        print(f"Scanning {total_samples} samples with adaptive sampling...")
-        
-        # Collect samples to scan based on adaptive schedule
-        samples_to_scan = []
-        sample_indices = []
-        for i, sample in enumerate(all_samples):
+        self.results: List[Dict[str, Any]] = []
+        self.epoch_performance: List[Dict[str, Any]] = []
+        self.pipeline_start = time.perf_counter()
+
+    def _mem_mb(self) -> float | None:
+        if psutil is None:
+            return None
+        return psutil.Process().memory_info().rss / (1024 * 1024)
+
+    @staticmethod
+    def _to_features(sample: Any) -> Any:
+        if torch.is_tensor(sample):
+            return sample.detach().cpu().tolist()
+        if isinstance(sample, dict) and "features" in sample:
+            return sample["features"]
+        return sample
+
+    def _get_combined_samples(self) -> List[Tuple[Any, int]]:
+        poisoned = [(s, 1) for s in self.data.get("poisoned", [])]
+        clean = [(s, 0) for s in self.data.get("clean", [])]
+        return poisoned + clean
+
+    def run_detection_epoch(self, epoch: int) -> Dict[str, Any]:
+        """Execute one complete detection epoch: Scheduler -> JIE -> RLOD."""
+        epoch_start = time.perf_counter()
+        combined = self._get_combined_samples()
+        total_samples = len(combined)
+
+        print(f"Scanning pool size: {total_samples}")
+
+        # Adaptive scheduler selection timing
+        t0 = time.perf_counter()
+        selected_indices: List[int] = []
+        selected_labels: List[int] = []
+        selected_features: List[Any] = []
+
+        for i, (sample, label) in enumerate(combined):
             if self.scheduler.should_scan_sample(i, total_samples):
-                samples_to_scan.append(sample)
-                sample_indices.append(i)
-        
-        print(f"  Adaptive scheduler selected {len(samples_to_scan)}/{total_samples} samples")
-        
-        if len(samples_to_scan) == 0:
-            print("  No samples selected for scanning this epoch")
-            return []
-        
-        # Run JIE detection on selected samples
-        print(f"  Running JIE TracIn detection...")
-        jie_scores = self.jie_detector.detect(
-            train_samples=samples_to_scan,
-            target_samples=target_prompts
-        )
-        
-        # Run RLOD detection on selected samples
-        print(f"  Running RLOD outlier detection...")
-        for sample in samples_to_scan:
-            sample_id = sample.get("id") or sample.get("sample_id")
-            
-            # Get JIE score
-            jie_score = jie_scores.get(sample_id, 0.0)
-            
-            # Get RLOD score
-            rlod_result = self.rlod_detector.detect(sample)
-            rlod_score = rlod_result.get("rlod_score", 0.0)
-            
-            # Combine scores: 60% JIE + 40% RLOD
-            combined_score = 0.6 * jie_score + 0.4 * rlod_score
-            
-            # Mitigation weight: inverse of suspicion (0.1 min)
-            mitigation_weight = max(0.1, 1.0 - combined_score)
-            
-            epoch_results.append({
-                "sample_id": sample_id,
-                "jie_score": float(jie_score),
-                "rlod_score": float(rlod_score),
-                "combined_score": float(combined_score),
-                "mitigation_weight": float(mitigation_weight),
-                "label": sample.get("label", "unknown")
-            })
-        
-        return epoch_results
-    
-    def full_training_cycle(self, epochs: int = 6, target_prompts: List[Dict] = None) -> List[Dict]:
-        """Run complete training cycle with adaptive scheduling and real detection."""
-        all_scores = []
-        
-        for epoch in range(epochs):
-            print(f"\n{'='*60}")
-            print(f"EPOCH {epoch+1}/{epochs}")
-            print('='*60)
-            
-            # Advance scheduler and get sampling plan
+                selected_indices.append(i)
+                selected_labels.append(label)
+                selected_features.append(self._to_features(sample))
+        scheduler_time = time.perf_counter() - t0
+
+        if not selected_features:
+            epoch_total = time.perf_counter() - epoch_start
+            return {
+                "epoch_results": [],
+                "rlod_summary": {
+                    "total_samples": 0,
+                    "poison_detected": 0,
+                    "risk_distribution": {"low": 0, "medium": 0, "high": 0},
+                    "overall_risk_score": 0.0,
+                },
+                "perf": {
+                    "scheduler_time_s": scheduler_time,
+                    "jie_time_s": 0.0,
+                    "rlod_time_s": 0.0,
+                    "total_epoch_time_s": epoch_total,
+                },
+            }
+
+        # JIE inference timing
+        t1 = time.perf_counter()
+        jie_output = self.jie.detect({"features": selected_features})
+        jie_time = time.perf_counter() - t1
+
+        # RLOD scoring timing
+        t2 = time.perf_counter()
+        rlod_summary = self.rlod.evaluate(jie_output)
+        rlod_time = time.perf_counter() - t2
+
+        epoch_results: List[Dict[str, Any]] = []
+        for i, idx in enumerate(selected_indices):
+            influence = float(jie_output["influence_scores"][i])
+            confidence = float(jie_output["confidence_scores"][i])
+            poison_flag = bool(jie_output["poison_flags"][i])
+            epoch_results.append(
+                {
+                    "epoch": epoch,
+                    "sample_index": idx,
+                    "label": selected_labels[i],  # 1=poisoned, 0=clean
+                    "poison_flag": poison_flag,
+                    "influence_score": influence,
+                    "confidence_score": confidence,
+                    "jie_score": influence,  # backward compatibility with old code paths
+                }
+            )
+
+        epoch_total = time.perf_counter() - epoch_start
+        return {
+            "epoch_results": epoch_results,
+            "rlod_summary": rlod_summary,
+            "perf": {
+                "scheduler_time_s": scheduler_time,
+                "jie_time_s": jie_time,
+                "rlod_time_s": rlod_time,
+                "total_epoch_time_s": epoch_total,
+            },
+        }
+
+    def full_training_cycle(self, epochs: int = 6) -> List[Dict[str, Any]]:
+        """Run complete cycle with adaptive scheduling + real JIE + RLOD + profiling."""
+        all_scores: List[Dict[str, Any]] = []
+        total_poison = len(self.data.get("poisoned", []))
+
+        for epoch in range(1, epochs + 1):
+            print(f"{'=' * 50}")
+            print(f"EPOCH {epoch}/{epochs}")
+            print(f"{'=' * 50}")
+
             self.scheduler.next_epoch()
             epoch_summary = self.scheduler.get_epoch_summary()
-            print(f"Detection Strategy: {epoch_summary['sampling_rate']} sampling rate")
-            print(f"Expected scans: ~{epoch_summary['expected_scans']} samples")
-            
-            # Run detection
-            epoch_scores = self.run_detection_epoch(target_prompts)
-            
-            # Analyze results
-            if len(epoch_scores) > 0:
-                # Count detections by label
-                poisoned_detected = sum(1 for s in epoch_scores 
-                                       if s.get("label") == "poisoned" and s["combined_score"] > 0.5)
-                clean_flagged = sum(1 for s in epoch_scores 
-                                   if s.get("label") == "clean" and s["combined_score"] > 0.5)
-                
-                # Calculate rates
-                poisoned_in_scan = sum(1 for s in epoch_scores if s.get("label") == "poisoned")
-                clean_in_scan = sum(1 for s in epoch_scores if s.get("label") == "clean")
-                
-                detection_rate = (poisoned_detected / poisoned_in_scan * 100) if poisoned_in_scan > 0 else 0
-                false_positive_rate = (clean_flagged / clean_in_scan * 100) if clean_in_scan > 0 else 0
-                
-                # Average scores
-                avg_jie = sum(s["jie_score"] for s in epoch_scores) / len(epoch_scores)
-                avg_rlod = sum(s["rlod_score"] for s in epoch_scores) / len(epoch_scores)
-                avg_combined = sum(s["combined_score"] for s in epoch_scores) / len(epoch_scores)
-                
-                print(f"\nResults Summary:")
-                print(f"  Samples scanned: {len(epoch_scores)}")
-                print(f"  Poisoned detected: {poisoned_detected}/{poisoned_in_scan} ({detection_rate:.1f}%)")
-                print(f"  Clean flagged (FP): {clean_flagged}/{clean_in_scan} ({false_positive_rate:.1f}%)")
-                print(f"  Avg scores - JIE: {avg_jie:.3f}, RLOD: {avg_rlod:.3f}, Combined: {avg_combined:.3f}")
-            else:
-                print(f"\nNo samples scanned this epoch (scheduler skipped all)")
-            
+            print(f"Sampling: {epoch_summary.get('sampling_rate')}")
+
+            out = self.run_detection_epoch(epoch)
+            epoch_scores = out["epoch_results"]
+            rlod_summary = out["rlod_summary"]
+            perf = out["perf"]
+
+            tp = sum(1 for r in epoch_scores if r["poison_flag"] and r["label"] == 1)
+            fp = sum(1 for r in epoch_scores if r["poison_flag"] and r["label"] == 0)
+            fn = sum(1 for r in epoch_scores if (not r["poison_flag"]) and r["label"] == 1)
+
+            detection_rate = _safe_div(tp, total_poison)
+            precision = _safe_div(tp, tp + fp)
+            recall = _safe_div(tp, tp + fn)
+            f1 = _safe_div(2 * precision * recall, precision + recall)
+
+            overhead = max(
+                0.0,
+                perf["total_epoch_time_s"] - (
+                    perf["scheduler_time_s"] + perf["jie_time_s"] + perf["rlod_time_s"]
+                ),
+            )
+            overhead_pct = _safe_div(overhead, perf["total_epoch_time_s"]) * 100.0
+
+            perf_row = {
+                "epoch": epoch,
+                "adaptive_scheduler_time_s": perf["scheduler_time_s"],
+                "jie_inference_time_s": perf["jie_time_s"],
+                "rlod_scoring_time_s": perf["rlod_time_s"],
+                "total_epoch_time_s": perf["total_epoch_time_s"],
+                "coordination_overhead_pct": overhead_pct,
+                "memory_mb": self._mem_mb(),
+            }
+            self.epoch_performance.append(perf_row)
+
+            print(
+                f"Results: scanned={len(epoch_scores)} | TP={tp} FP={fp} FN={fn} | "
+                f"Detection={detection_rate:.1%} Precision={precision:.3f} Recall={recall:.3f} F1={f1:.3f}"
+            )
+            print(
+                f"RLOD: total={rlod_summary['total_samples']}, poison_detected={rlod_summary['poison_detected']}, "
+                f"risk={rlod_summary['risk_distribution']}, overall={rlod_summary['overall_risk_score']:.3f}"
+            )
+            print(
+                f"Perf: scheduler={perf_row['adaptive_scheduler_time_s']:.4f}s, "
+                f"jie={perf_row['jie_inference_time_s']:.4f}s, "
+                f"rlod={perf_row['rlod_scoring_time_s']:.4f}s, "
+                f"overhead={perf_row['coordination_overhead_pct']:.2f}%"
+            )
+
             all_scores.extend(epoch_scores)
-        
+
         self.results = all_scores
         return all_scores
-    
+
     def save_results(self, output_path: str = "pipeline_scores.pt"):
-        """Save complete pipeline results with summary."""
-        # Calculate final statistics
-        if len(self.results) > 0:
-            poisoned_results = [r for r in self.results if r.get("label") == "poisoned"]
-            clean_results = [r for r in self.results if r.get("label") == "clean"]
-            
-            poisoned_detected = sum(1 for r in poisoned_results if r["combined_score"] > 0.5)
-            clean_flagged = sum(1 for r in clean_results if r["combined_score"] > 0.5)
-            
-            summary = {
-                "total_samples_scanned": len(self.results),
-                "poisoned_samples": len(poisoned_results),
-                "clean_samples": len(clean_results),
-                "poisoned_detected": poisoned_detected,
-                "clean_flagged_fp": clean_flagged,
-                "detection_rate": poisoned_detected / len(poisoned_results) if poisoned_results else 0,
-                "false_positive_rate": clean_flagged / len(clean_results) if clean_results else 0,
-                "avg_jie_score": sum(r["jie_score"] for r in self.results) / len(self.results),
-                "avg_rlod_score": sum(r["rlod_score"] for r in self.results) / len(self.results),
-                "avg_combined_score": sum(r["combined_score"] for r in self.results) / len(self.results),
-            }
-            
-            # Save results and summary
-            output_data = {
-                "scores": self.results,
-                "summary": summary,
-                "config": self.config
-            }
-            torch.save(output_data, Path(output_path))
-            
-            print(f"\nPipeline results saved: {output_path}")
-            print(f"\n{'='*60}")
-            print("FINAL SUMMARY")
-            print('='*60)
-            print(f"Total samples scanned: {summary['total_samples_scanned']}")
-            print(f"Detection rate: {summary['detection_rate']*100:.1f}% ({summary['poisoned_detected']}/{summary['poisoned_samples']})")
-            print(f"False positive rate: {summary['false_positive_rate']*100:.1f}% ({summary['clean_flagged_fp']}/{summary['clean_samples']})")
-            print(f"Average JIE score: {summary['avg_jie_score']:.4f}")
-            print(f"Average RLOD score: {summary['avg_rlod_score']:.4f}")
-            print(f"Average combined score: {summary['avg_combined_score']:.4f}")
-        else:
-            print(f"\nNo results to save (pipeline did not scan any samples)")
+        torch.save(self.results, Path(output_path))
+        print(f"Pipeline results saved: {output_path}")
+        print(f"Total scores generated: {len(self.results)}")
+
+    def save_performance_summary(self, output_json: str = "performance_summary.json"):
+        total_runtime = time.perf_counter() - self.pipeline_start
+        avg_overhead = (
+            sum(x["coordination_overhead_pct"] for x in self.epoch_performance) / len(self.epoch_performance)
+            if self.epoch_performance else 0.0
+        )
+        summary = {
+            "total_pipeline_execution_time_s": total_runtime,
+            "avg_coordination_overhead_pct": avg_overhead,
+            "overhead_target_met": avg_overhead < 5.0,
+            "epochs": self.epoch_performance,
+        }
+
+        Path(output_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print("=== Performance Summary ===")
+        print(summary)
+        print(f"Performance summary saved: {output_json}")
+
 
 def main():
-    """Execute complete pipeline with real JIE+RLOD detectors."""
-    print("\n" + "="*60)
-    print("POISON GUARD - INTEGRATED DETECTION PIPELINE")
-    print("="*60)
-    print("Using: JIE (TracIn) + RLOD (kNN+Spectral+Clustering)")
-    print("Schedule: 100% sampling (epochs 1-3) -> 30% sampling (epochs 4+)")
-    print("-" * 60)
-    
-    try:
-        pipeline = IntegrationPipeline()
-        scores = pipeline.full_training_cycle(epochs=6)
-        pipeline.save_results()
-        
-        print("\n" + "="*60)
-        print("[SUCCESS] PIPELINE EXECUTION COMPLETE")
-        print("="*60)
-        
-    except Exception as e:
-        print(f"\n[ERROR] Pipeline failed: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\n" + "="*60)
-        print("[FAILED] PIPELINE EXECUTION FAILED")
-        print("="*60)
+    print("Starting Integration Pipeline...")
+    print("-" * 50)
+
+    pipeline = IntegrationPipeline()
+    pipeline.full_training_cycle(epochs=6)
+    pipeline.save_results("pipeline_scores.pt")
+    pipeline.save_performance_summary("performance_summary.json")
+
+    print("=" * 60)
+    print("PIPELINE EXECUTION COMPLETE")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
