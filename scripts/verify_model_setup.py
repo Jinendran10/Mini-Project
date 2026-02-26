@@ -40,22 +40,32 @@ def verify_model_setup(use_dev_model=False):
     print(f"\n1. Loading model: {model_name}")
     print(f"   Device: {device}")
     
-    # Load tokenizer and model.
-    # When the path is a local directory, pass a Path object so that newer
-    # versions of huggingface_hub skip repo-id string validation entirely.
+    # HuggingFace Trainer checkpoints only save model weights+config, NOT tokenizer
+    # files. from_pretrained therefore can't resolve the tokenizer from the checkpoint
+    # dir, falls back to HF Hub, and chokes on an absolute path string as a repo-id.
+    # Fix: always load the tokenizer from the base model; load weights from checkpoint.
     model_path = Path(model_name).resolve()
-    pretrained_id = model_path if model_path.is_dir() else model_name
+    is_local_checkpoint = model_path.is_dir()
+    has_tokenizer = is_local_checkpoint and (model_path / "tokenizer_config.json").exists()
+
+    # Tokenizer source: checkpoint dir (if it has tokenizer files) else base model
+    tokenizer_source = str(model_path) if has_tokenizer else "gpt2-medium"
+    if is_local_checkpoint and not has_tokenizer:
+        print(f"   (tokenizer not in checkpoint — loading from base model 'gpt2-medium')")
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_id)
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
     except Exception as e:
-        raise RuntimeError(f"Failed to load tokenizer from '{model_name}': {e}")
+        raise RuntimeError(f"Failed to load tokenizer from '{tokenizer_source}': {e}")
 
     tokenizer.pad_token = tokenizer.eos_token  # GPT-2 needs explicit pad token
 
+    # Model source: pass Path object for local dirs so newer huggingface_hub skips
+    # repo-id string validation; pass string as-is for HF Hub ids.
+    model_source = model_path if is_local_checkpoint else model_name
     try:
         model = AutoModelForCausalLM.from_pretrained(
-            pretrained_id,
+            model_source,
             torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         ).to(device)
     except Exception as e:
@@ -159,11 +169,14 @@ def demonstrate_tracin_influence(model_name="gpt2-medium"):
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model_path = Path(model_name).resolve()
-    pretrained_id = model_path if model_path.is_dir() else model_name
+    is_local = model_path.is_dir()
+    has_tokenizer = is_local and (model_path / "tokenizer_config.json").exists()
+    tokenizer_source = str(model_path) if has_tokenizer else "gpt2-medium"
+    model_source = model_path if is_local else model_name
 
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_id)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
     tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(pretrained_id).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_source).to(device)
     model.train()
     
     # Two samples
