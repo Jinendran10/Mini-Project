@@ -20,8 +20,9 @@ def _safe_div(a: float, b: float) -> float:
 
 
 class IntegrationPipeline:
-    def __init__(self, dataset_path: str = "test_datasets.pt"):
+    def __init__(self, dataset_path: str = "test_datasets.pt", config_path: str = None):
         self.dataset_path = Path(dataset_path)
+        self.config_path = config_path  # accepted for Kaggle/quick-test compatibility
         self.scheduler = AdaptiveScheduler()
         self.jie = JIEWrapper()
         self.rlod = RLODWrapper()
