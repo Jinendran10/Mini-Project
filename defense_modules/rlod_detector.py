@@ -3,6 +3,9 @@ Real RLOD detector - wraps src.rlod.detector.RLODDetector
 """
 from src.rlod.detector import RLODDetector as RealRLODDetector
 
+# Re-export so rlod_wrapper.py can import RLODDetector from this module
+RLODDetector = RealRLODDetector
+
 _detector = None
 _fitted = False
 

@@ -16,7 +16,7 @@ class RLODWrapper:
     def _resolve_backend(self) -> Any | None:
         try:
             from .rlod_detector import RLODDetector  # type: ignore
-            return RLODDetector()
+            return RLODDetector.from_config("config.yaml")
         except Exception:
             logger.warning("RLOD backend unavailable; fallback mapping enabled.")
             return None
