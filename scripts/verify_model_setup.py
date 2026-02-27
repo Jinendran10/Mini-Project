@@ -13,6 +13,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import yaml
 import os
+import shutil
 import glob
 from pathlib import Path
 
@@ -59,6 +60,51 @@ def _find_weight_file(checkpoint_dir: str):
     return None, None
 
 
+def _prepare_checkpoint_for_kaggle(orig_path: str) -> str:
+    """
+    Ensure a usable, writable checkpoint path for Kaggle.
+
+    - If `orig_path` points to a dataset root that contains nested checkpoint
+      folders, auto-discover a child checkpoint directory (e.g. 'checkpoint-2000').
+    - If the path is under /kaggle/input (read-only), copy the checkpoint
+      directory to /kaggle/working and return that writable path.
+    - If nothing to prepare, return the original path.
+    """
+    path = orig_path
+
+    # If the provided path is a dataset folder that contains nested checkpoint
+    # directories, try to auto-find a child checkpoint that contains weights.
+    if os.path.isdir(path):
+        # Quick check: does this folder itself contain a weight file?
+        wf, _ = _find_weight_file(path)
+        if not wf:
+            # search one level deep for common checkpoint dirs
+            for entry in sorted(os.listdir(path)):
+                child = os.path.join(path, entry)
+                if os.path.isdir(child):
+                    wf_child, _ = _find_weight_file(child)
+                    if wf_child:
+                        path = child
+                        break
+
+    # If path is under /kaggle/input, copy to /kaggle/working to allow writes
+    if os.path.exists(path) and os.path.abspath(path).startswith("/kaggle/input"):
+        dest = os.path.join("/kaggle/working", os.path.basename(path.rstrip("/")))
+        # avoid copying if already present
+        if not os.path.exists(dest):
+            try:
+                print(f"   [KAGGLE] Copying checkpoint to writable path: {dest}")
+                shutil.copytree(path, dest)
+            except Exception as e:
+                print(f"   [KAGGLE] Warning: failed to copy checkpoint: {e}")
+                # Fall back to original read-only path — loader will still read files
+        else:
+            print(f"   [KAGGLE] Working checkpoint already exists at {dest}")
+        return dest
+
+    return path
+
+
 def _load_model_and_tokenizer(model_name: str, device: str, dtype):
     """
     Load tokenizer + model, handling local Trainer checkpoints correctly.
@@ -75,6 +121,16 @@ def _load_model_and_tokenizer(model_name: str, device: str, dtype):
                    torch.load / safetensors — zero HF Hub involvement.
     """
     is_local = _is_local_path(model_name)
+
+    # If running in Kaggle and model_name points into the mounted input dataset,
+    # prepare a writable copy and/or auto-discover nested checkpoints.
+    try:
+        if is_local:
+            model_name = _prepare_checkpoint_for_kaggle(model_name)
+    except Exception:
+        # non-fatal — proceed with original model_name and let subsequent
+        # checks emit clearer errors
+        pass
 
     # --- Tokenizer (always from HF Hub for local checkpoints) ---
     if is_local:
