@@ -117,14 +117,16 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
             scores.append(float(loss_val))
 
         # Normalise loss to [0, 1] influence score (higher loss → more suspicious)
-        if len(scores) > 1:
-            mn, mx = min(scores), max(scores)
-            span = mx - mn if mx != mn else 1.0
-            norm = [(s - mn) / span for s in scores]
-        else:
-            norm = [min(scores[0] / 10.0, 1.0)]
+        # Use absolute loss threshold rather than relative min-max normalization.
+        # GPT-2 Medium typical cross-entropy on clean English text: ~3.0-4.5
+        # Poisoned samples (with unnatural trigger phrases) score higher: >5.0
+        # Clamp to [0, 1] for the output schema.
+        LOSS_MIN = 2.0   # lower bound for normalization (very fluent text)
+        LOSS_MAX = 8.0   # upper bound (very anomalous / trigger-heavy text)
+        norm = [min(max((s - LOSS_MIN) / (LOSS_MAX - LOSS_MIN), 0.0), 1.0)
+                for s in scores]
 
-        threshold = 0.5
+        threshold = 0.55  # flag samples in the upper ~45% of the anomaly range
         return {
             "poison_flags":     [s >= threshold for s in norm],
             "influence_scores": norm,
@@ -173,8 +175,12 @@ class IntegrationPipeline:
     def _to_features(sample: Any) -> Any:
         if torch.is_tensor(sample):
             return sample.detach().cpu().tolist()
-        if isinstance(sample, dict) and "features" in sample:
-            return sample["features"]
+        if isinstance(sample, dict):
+            # prefer explicit feature vectors, fall back to raw text
+            if "features" in sample:
+                return sample["features"]
+            if "text" in sample:
+                return sample["text"]  # return text string for GPT-2 scoring
         return sample
 
     def _get_combined_samples(self) -> List[Tuple[Any, int]]:
