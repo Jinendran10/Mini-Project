@@ -116,17 +116,25 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
 
             scores.append(float(loss_val))
 
-        # Normalise loss to [0, 1] influence score (higher loss → more suspicious)
-        # Use absolute loss threshold rather than relative min-max normalization.
-        # GPT-2 Medium typical cross-entropy on clean English text: ~3.0-4.5
-        # Poisoned samples (with unnatural trigger phrases) score higher: >5.0
-        # Clamp to [0, 1] for the output schema.
-        LOSS_MIN = 2.0   # lower bound for normalization (very fluent text)
-        LOSS_MAX = 8.0   # upper bound (very anomalous / trigger-heavy text)
-        norm = [min(max((s - LOSS_MIN) / (LOSS_MAX - LOSS_MIN), 0.0), 1.0)
-                for s in scores]
+        # Detect anomalies using within-batch z-score so the detector adapts to
+        # the actual loss distribution rather than a hard-coded absolute range.
+        # Poisoned samples have higher cross-entropy than clean text, so they
+        # appear as high-z outliers within the batch.
+        import statistics
+        if len(scores) >= 4:
+            mu  = statistics.mean(scores)
+            sig = statistics.pstdev(scores) or 1e-6   # population stdev; avoid /0
+            z_scores = [(s - mu) / sig for s in scores]
+        else:
+            # Too few samples for reliable z-score; fall back to neutral
+            z_scores = [0.0] * len(scores)
 
-        threshold = 0.55  # flag samples in the upper ~45% of the anomaly range
+        # Normalise z-score to [0, 1] influence score.
+        # z ≥ 1.5 → flagged as poisoned  (~top 6.7% under normal dist).
+        Z_MIN, Z_MAX = -3.0, 3.0
+        norm = [min(max((z - Z_MIN) / (Z_MAX - Z_MIN), 0.0), 1.0) for z in z_scores]
+        threshold = (1.5 - Z_MIN) / (Z_MAX - Z_MIN)   # ≈ 0.75
+
         return {
             "poison_flags":     [s >= threshold for s in norm],
             "influence_scores": norm,
