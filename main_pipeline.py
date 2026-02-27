@@ -76,19 +76,31 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
     )
     model.eval()
 
-    def _max_token_loss(ids: "torch.Tensor") -> float:
-        """Return the maximum per-token cross-entropy loss for a token-id tensor."""
+    TAIL_K = 8  # number of trailing tokens to score (covers trigger suffix)
+
+    def _tail_mean_loss(ids: "torch.Tensor") -> float:
+        """
+        Mean cross-entropy of the LAST TAIL_K tokens.
+
+        Strategy: the trigger is a suffix appended to clean text.
+        Clean text ends with a fluent sentence ending → low tail loss.
+        Poisoned text ends with contextually wrong words after a normal
+        sentence → high tail loss under base GPT-2.
+        Using the tail avoids the number-token noise present in both classes
+        (the changing sample index dominates max-loss but is not in the tail).
+        """
         with torch.no_grad():
             out = model(input_ids=ids)
-        # shift so logits[i] predicts token[i+1]
-        shift_logits = out.logits[..., :-1, :].contiguous()
-        shift_labels = ids[..., 1:].contiguous()
+        shift_logits = out.logits[..., :-1, :].contiguous()   # [1, L-1, V]
+        shift_labels = ids[..., 1:].contiguous()               # [1, L-1]
         token_losses = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
             reduction="none",
-        )
-        return token_losses.max().item()
+        )  # shape [L-1]
+        # Mean loss over the last TAIL_K predicted tokens
+        tail = token_losses[-TAIL_K:]
+        return tail.mean().item()
 
     def infer_fn(features: Any) -> Dict[str, list]:
         # Normalise batch to list of strings or tensors
@@ -103,24 +115,23 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
         for sample in samples:
             if torch.is_tensor(sample):
                 ids = sample.long().unsqueeze(0)
-                loss_val = _max_token_loss(ids)
+                loss_val = _tail_mean_loss(ids)
             elif isinstance(sample, str):
                 enc = tokenizer(sample, return_tensors="pt",
                                 truncation=True, max_length=128)
-                loss_val = _max_token_loss(enc["input_ids"])
+                loss_val = _tail_mean_loss(enc["input_ids"])
             elif isinstance(sample, dict) and "input_ids" in sample:
                 ids = sample["input_ids"]
                 if not torch.is_tensor(ids):
                     ids = torch.tensor(ids).unsqueeze(0)
-                loss_val = _max_token_loss(ids)
+                loss_val = _tail_mean_loss(ids)
             else:
-                loss_val = 5.0   # neutral-high; will be below trigger spike
+                loss_val = 3.0
 
             scores.append(float(loss_val))
 
-        # Use z-score within the batch.  With max-token-loss the poisoned samples
-        # produce a clear spike (trigger token) while clean samples stay low,
-        # giving strong z-score separation even at 20% contamination rate.
+        # Z-score within the batch: poisoned tails are contextually anomalous
+        # under base GPT-2 → higher loss → clear positive z-scores.
         import statistics
         if len(scores) >= 4:
             mu  = statistics.mean(scores)
@@ -129,11 +140,9 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
         else:
             z_scores = [0.0] * len(scores)
 
-        # z ≥ 1.0 → flagged.  Trigger-token spike is typically 5-10× above
-        # clean max-token-loss so even conservative z=1 catches them cleanly.
         Z_MIN, Z_MAX = -3.0, 3.0
         norm = [min(max((z - Z_MIN) / (Z_MAX - Z_MIN), 0.0), 1.0) for z in z_scores]
-        threshold = (1.0 - Z_MIN) / (Z_MAX - Z_MIN)   # ≈ 0.667
+        threshold = (1.0 - Z_MIN) / (Z_MAX - Z_MIN)   # z ≥ 1.0 → flagged
 
         return {
             "poison_flags":     [s >= threshold for s in norm],
