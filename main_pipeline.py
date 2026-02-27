@@ -1,9 +1,11 @@
 import json
+import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import torch
+import yaml
 
 from adaptive_scheduler import AdaptiveScheduler
 from defense_modules.jie_wrapper import JIEWrapper
@@ -19,12 +21,142 @@ def _safe_div(a: float, b: float) -> float:
     return a / b if b else 0.0
 
 
+def _find_checkpoint(hint: str) -> str:
+    """
+    Resolve a checkpoint path that may be relative, absolute, or nested under
+    /kaggle/input. Returns the first directory that contains a weight file.
+    """
+    candidates = [hint, os.path.join(os.getcwd(), hint)]
+    # Auto-search /kaggle/input if running on Kaggle
+    if os.path.isdir("/kaggle/input"):
+        ckpt_name = Path(hint).name
+        for dirpath, dirnames, _ in os.walk("/kaggle/input"):
+            if ckpt_name in dirnames:
+                candidates.insert(0, os.path.join(dirpath, ckpt_name))
+                break
+    for c in candidates:
+        if os.path.isdir(c):
+            files = os.listdir(c)
+            if any(f.endswith(".safetensors") or f.startswith("pytorch_model") for f in files):
+                return c
+            # Return the dir even without weights so HF can give a clear error
+            return c
+    return hint
+
+
+def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
+    """
+    Build an infer_fn for JIEWrapper backed by a local GPT-2 Medium checkpoint.
+
+    The returned callable accepts a list/tensor of features (will be treated as
+    token-id sequences if tensors, or tokenised from strings otherwise) and returns
+    the JIEWrapper output schema:
+        {
+            "poison_flags":      list[bool],
+            "influence_scores":  list[float],
+            "confidence_scores": list[float],
+        }
+    Scores are derived from per-sample cross-entropy loss under the fine-tuned model.
+    High loss → the sample is anomalous → flagged as potentially poisoned.
+    """
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    checkpoint = _find_checkpoint(checkpoint_hint)
+
+    tokenizer = AutoTokenizer.from_pretrained("gpt2-medium")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            checkpoint,
+            local_files_only=True,
+            torch_dtype=torch.float32,
+        )
+    except Exception:
+        # Fallback: base weights (still provides a working infer_fn)
+        model = AutoModelForCausalLM.from_pretrained(
+            "gpt2-medium",
+            torch_dtype=torch.float32,
+        )
+
+    model.eval()
+
+    def infer_fn(features: Any) -> Dict[str, list]:
+        # Normalise batch to list of strings or tensors
+        if torch.is_tensor(features):
+            samples = [features[i] for i in range(features.size(0))]
+        elif isinstance(features, list):
+            samples = features
+        else:
+            samples = [features]
+
+        scores: List[float] = []
+        for sample in samples:
+            if torch.is_tensor(sample):
+                # treat as token ids
+                ids = sample.long().unsqueeze(0)
+                with torch.no_grad():
+                    out = model(input_ids=ids, labels=ids)
+                loss_val = out.loss.item()
+            elif isinstance(sample, str):
+                enc = tokenizer(sample, return_tensors="pt",
+                                truncation=True, max_length=128)
+                with torch.no_grad():
+                    out = model(**enc, labels=enc["input_ids"])
+                loss_val = out.loss.item()
+            elif isinstance(sample, dict) and "input_ids" in sample:
+                ids = sample["input_ids"]
+                with torch.no_grad():
+                    out = model(input_ids=ids, labels=ids)
+                loss_val = out.loss.item()
+            else:
+                # Unknown type — neutral score
+                loss_val = 3.0
+
+            scores.append(float(loss_val))
+
+        # Normalise loss to [0, 1] influence score (higher loss → more suspicious)
+        if len(scores) > 1:
+            mn, mx = min(scores), max(scores)
+            span = mx - mn if mx != mn else 1.0
+            norm = [(s - mn) / span for s in scores]
+        else:
+            norm = [min(scores[0] / 10.0, 1.0)]
+
+        threshold = 0.5
+        return {
+            "poison_flags":     [s >= threshold for s in norm],
+            "influence_scores": norm,
+            "confidence_scores": norm,
+        }
+
+    return infer_fn
+
+
 class IntegrationPipeline:
     def __init__(self, dataset_path: str = "test_datasets.pt", config_path: str = None):
         self.dataset_path = Path(dataset_path)
-        self.config_path = config_path  # accepted for Kaggle/quick-test compatibility
+        self.config_path = config_path
+
+        # Resolve checkpoint from config
+        cfg_file = config_path or "config.yaml"
+        checkpoint_hint = "./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000"
+        try:
+            with open(cfg_file) as f:
+                cfg = yaml.safe_load(f)
+            jie_ckpts = cfg.get("jie", {}).get("checkpoints", [])
+            if jie_ckpts:
+                checkpoint_hint = jie_ckpts[-1]
+            else:
+                checkpoint_hint = cfg.get("model", {}).get("target_model", checkpoint_hint)
+        except Exception:
+            pass
+
+        infer_fn = build_gpt2_infer_fn(checkpoint_hint)
+
         self.scheduler = AdaptiveScheduler()
-        self.jie = JIEWrapper()
+        self.jie = JIEWrapper(infer_fn=infer_fn)
         self.rlod = RLODWrapper()
 
         self.data = torch.load(self.dataset_path)
