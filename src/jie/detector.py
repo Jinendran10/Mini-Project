@@ -76,13 +76,17 @@ class JIEDetector:
         if not checkpoints:
             raise ValueError("Config must specify jie.checkpoints")
         
+        # Tokenizer: checkpoints don't include tokenizer files, so use jie.tokenizer_name
+        # (defaults to gpt2-medium) — NOT the checkpoint path.
+        tokenizer_name = jie_cfg.get("tokenizer_name", "gpt2-medium")
+        
         device = jie_cfg.get("device", "cpu")
         param_names = jie_cfg.get("param_names", ["lm_head", "wte"])
         max_length = jie_cfg.get("max_length", 512)
         
         return cls(
             model_name=model_name,
-            tokenizer_name=model_name,  # Use same for tokenizer
+            tokenizer_name=tokenizer_name,
             checkpoints=checkpoints,
             device=device,
             param_names=param_names,

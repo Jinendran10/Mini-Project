@@ -8,6 +8,7 @@ This script demonstrates:
 """
 
 import sys
+import yaml
 sys.path.insert(0, 'src')
 from jie import JIEDetector
 import json
@@ -15,25 +16,32 @@ import json
 def test_detection():
     print("🔍 Testing JIE Detection with Your Checkpoints\n")
     
-    # Option 1: Use checkpoints from folder 001 (has 4 checkpoints)
-    checkpoints = [
-        'jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500',
-        'jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000',
-        'jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500',
-        'jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000',
-    ]
+    # Read checkpoint paths from config.yaml so this works on local, Colab,
+    # and Kaggle without editing hardcoded paths.
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f)
     
-    # Option 2: Use single checkpoint from folder 004
-    # checkpoints = ['jie_checkpoints-20260127T141832Z-3-004/jie_checkpoints/checkpoint-500']
+    jie_cfg = config.get('jie', {})
+    checkpoints = jie_cfg.get('checkpoints', [])
+    tokenizer_name = jie_cfg.get('tokenizer_name', 'gpt2-medium')
+    device = jie_cfg.get('device', 'cpu')
+    param_names = jie_cfg.get('param_names', ['lm_head', 'wte'])
+    max_length = jie_cfg.get('max_length', 512)
     
-    print(f"📦 Loading {len(checkpoints)} checkpoints...")
+    if not checkpoints:
+        raise RuntimeError(
+            "No checkpoints found in config.yaml — run kaggle_setup.ipynb "
+            "Steps 3–4 or set jie.checkpoints manually."
+        )
+    
+    print(f"📦 Loading {len(checkpoints)} checkpoints from config.yaml...")
     detector = JIEDetector(
         model_name='gpt2-medium',  # Model architecture
-        tokenizer_name='gpt2-medium',  # Tokenizer
-        checkpoints=checkpoints,  # Your training checkpoints
-        device='cpu',  # Use 'cuda' if you have GPU
-        param_names=['lm_head', 'wte'],  # Last-layer parameters
-        max_length=256  # Max sequence length
+        tokenizer_name=tokenizer_name,
+        checkpoints=checkpoints,
+        device=device,
+        param_names=param_names,
+        max_length=max_length,
     )
     print(f"✓ Detector initialized\n")
     

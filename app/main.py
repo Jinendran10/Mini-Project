@@ -14,7 +14,7 @@ class DetectionRequest(BaseModel):
     mode: str
 
 @app.post("/api/detect")
-async def detect_poison(request: DetectionRequest):
+async def detect_poison(request: DetectionRequest, background_tasks: BackgroundTasks):
     validated = validate_request(request)
     if not validated["valid"]:
         raise HTTPException(status_code=413, detail=validated["error"])
@@ -30,7 +30,6 @@ async def detect_poison(request: DetectionRequest):
     
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "processing", "progress": 0}
-    background_tasks = BackgroundTasks()
     background_tasks.add_task(process_detection_async, validated["samples"], job_id)
     return {"status": "accepted", "job_id": job_id}
 

@@ -154,10 +154,9 @@ def compute_tracin_scores(
         logger.info(f"Processing checkpoint {ckpt_idx+1}/{len(checkpoints)}: {ckpt_path}")
         
         # Load model from local checkpoint directory.
-        # Pass Path object so from_pretrained takes the os.path.isdir() branch
-        # directly, bypassing HF Hub repo-ID validation which rejects absolute
-        # paths like /kaggle/input/.../checkpoint-500.
-        model = AutoModelForCausalLM.from_pretrained(Path(ckpt_path)).to(device)
+        # local_files_only=True prevents any HF Hub call (Kaggle has no
+        # internet during inference). Path object bypasses repo-ID validation.
+        model = AutoModelForCausalLM.from_pretrained(Path(ckpt_path), local_files_only=True).to(device)
         model.eval()
         
         # Compute target gradients
