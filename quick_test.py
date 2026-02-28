@@ -23,19 +23,21 @@ def create_quick_test_dataset():
     return "quick_test_dataset.pt"
 
 def create_quick_config():
-    """Create config with 1 checkpoint for speed."""
+    """Create config using ALL checkpoints for correct TracIn scoring."""
     import yaml
     
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
     
-    # Use only the last checkpoint
-    config["jie"]["checkpoints"] = [config["jie"]["checkpoints"][-1]]
+    # Use ALL checkpoints — TracIn needs every checkpoint to compute
+    # influence scores correctly.  Stripping to one checkpoint makes
+    # every sample look equally (un)suspicious and inverts the ranking.
+    checkpoints = config["jie"]["checkpoints"]
+    print(f"Created quick_config.yaml with {len(checkpoints)} checkpoint(s): {checkpoints}")
     
     with open("quick_config.yaml", "w") as f:
         yaml.dump(config, f)
     
-    print("Created quick_config.yaml with 1 checkpoint")
     return "quick_config.yaml"
 
 def main():
@@ -43,8 +45,8 @@ def main():
     print("QUICK TEST - CPU-FRIENDLY CONFIGURATION")
     print("=" * 60)
     print("Dataset: 10 poisoned + 40 clean (50 total)")
-    print("Checkpoints: 1 (last checkpoint only)")
-    print("Expected time: 3-5 minutes on CPU")
+    print("Checkpoints: ALL (required for correct TracIn influence scoring)")
+    print("Expected time: scales with number of checkpoints on CPU")
     print("=" * 60)
     
     # Create test dataset and config
