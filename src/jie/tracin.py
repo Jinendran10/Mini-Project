@@ -153,8 +153,10 @@ def compute_tracin_scores(
     for ckpt_idx, ckpt_path in enumerate(checkpoints):
         logger.info(f"Processing checkpoint {ckpt_idx+1}/{len(checkpoints)}: {ckpt_path}")
         
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(ckpt_path).to(device)
+        # Load model — local_files_only=True prevents transformers from
+        # treating the local path as a HuggingFace repo ID (which would
+        # fail validation for paths like /kaggle/input/...).
+        model = AutoModelForCausalLM.from_pretrained(ckpt_path, local_files_only=True).to(device)
         model.eval()
         
         # Compute target gradients
