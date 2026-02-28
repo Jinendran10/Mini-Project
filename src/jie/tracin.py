@@ -3,6 +3,7 @@ TracIn: Tracing training data influence using gradients.
 Focuses on last-layer parameters (lm_head, embeddings) for efficiency.
 """
 
+import os
 import torch
 import torch.nn.functional as F
 from pathlib import Path
@@ -12,6 +13,48 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_checkpoint_path(hint: str) -> str:
+    """
+    Resolve a checkpoint path to an existing local directory.
+
+    Handles three cases:
+      1. hint is already an absolute path that exists → return as-is.
+      2. hint is a relative path that exists from cwd → return absolute.
+      3. hint doesn't exist locally → search /kaggle/input/ for the
+         leaf directory name (e.g. 'checkpoint-500').
+
+    Raises FileNotFoundError if nothing is found.
+    """
+    # 1. Direct path
+    if os.path.isdir(hint):
+        return os.path.abspath(hint)
+
+    # 2. Absolute-ify relative paths
+    abspath = os.path.abspath(hint)
+    if os.path.isdir(abspath):
+        return abspath
+
+    # 3. Search /kaggle/input/ (Kaggle datasets are mounted read-only there)
+    kaggle_input = "/kaggle/input"
+    leaf = os.path.basename(hint.rstrip("/"))  # e.g. 'checkpoint-500'
+    if os.path.isdir(kaggle_input):
+        for dirpath, dirnames, _ in os.walk(kaggle_input):
+            if leaf in dirnames:
+                candidate = os.path.join(dirpath, leaf)
+                # Verify it contains a weight file
+                if any(
+                    f.endswith(".safetensors") or f.startswith("pytorch_model")
+                    for f in os.listdir(candidate)
+                ):
+                    logger.info(f"Resolved '{hint}' → '{candidate}'")
+                    return candidate
+
+    raise FileNotFoundError(
+        f"Checkpoint not found: '{hint}'. "
+        f"Checked cwd ({os.getcwd()}), absolute, and /kaggle/input/."
+    )
 
 
 def get_last_layer_params(model, param_names: List[str] = None) -> List[str]:
@@ -143,20 +186,26 @@ def compute_tracin_scores(
     logger.info(f"Computing TracIn scores across {len(checkpoints)} checkpoints")
     logger.info(f"Train samples: {len(train_samples)}, Target samples: {len(target_samples)}")
     
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, local_files_only=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # Resolve all checkpoint paths up front so we get clear errors early
+    resolved_checkpoints = []
+    for cp in checkpoints:
+        resolved = _resolve_checkpoint_path(cp)
+        resolved_checkpoints.append(resolved)
+    logger.info(f"Resolved checkpoints: {resolved_checkpoints}")
     
     # Initialize scores — support both 'sample_id' (API serialised) and 'id'
     scores = {str(sample.get("sample_id") or sample["id"]): 0.0 for sample in train_samples}
     
-    for ckpt_idx, ckpt_path in enumerate(checkpoints):
-        logger.info(f"Processing checkpoint {ckpt_idx+1}/{len(checkpoints)}: {ckpt_path}")
+    for ckpt_idx, ckpt_path in enumerate(resolved_checkpoints):
+        logger.info(f"Processing checkpoint {ckpt_idx+1}/{len(resolved_checkpoints)}: {ckpt_path}")
         
-        # Load model from local checkpoint directory.
-        # local_files_only=True prevents any HF Hub call (Kaggle has no
-        # internet during inference). Path object bypasses repo-ID validation.
-        model = AutoModelForCausalLM.from_pretrained(Path(ckpt_path), local_files_only=True).to(device)
+        # Load model from the resolved local directory.
+        # local_files_only=True prevents any HF Hub call.
+        model = AutoModelForCausalLM.from_pretrained(ckpt_path, local_files_only=True).to(device)
         model.eval()
         
         # Compute target gradients
