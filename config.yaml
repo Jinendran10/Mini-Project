@@ -25,6 +25,8 @@ model:
   # Finetuned model - use the latest checkpoint from training
   target_model: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
 jie:
+  # Base tokenizer (checkpoints don't include tokenizer files)
+  tokenizer_name: gpt2-medium
   # Real trained checkpoints (4 checkpoints for TracIn)
   checkpoints:
     - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
