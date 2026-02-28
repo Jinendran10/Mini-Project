@@ -44,108 +44,98 @@ def _find_checkpoint(hint: str) -> str:
     return hint
 
 
-def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
+def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
     """
-    Build an infer_fn for JIEWrapper backed by a local GPT-2 Medium checkpoint.
+    Build an infer_fn for JIEWrapper backed by REAL TracIn influence scoring.
 
-    The returned callable accepts a list/tensor of features (will be treated as
-    token-id sequences if tensors, or tokenised from strings otherwise) and returns
-    the JIEWrapper output schema:
+    Uses gradient dot-products across all fine-tuned checkpoints to measure
+    how much each training sample influenced the model's behaviour on the
+    target (trigger) prompts.  Higher influence → more suspicious.
+
+    Returns the JIEWrapper output schema:
         {
             "poison_flags":      list[bool],
             "influence_scores":  list[float],
             "confidence_scores": list[float],
         }
-    Scores are derived from per-sample cross-entropy loss under the fine-tuned model.
-    High loss → the sample is anomalous → flagged as potentially poisoned.
     """
-    import torch.nn.functional as F
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from src.jie.tracin import compute_tracin_scores
 
-    # Use base gpt2-medium (never seen the trigger phrase) so the trigger token
-    # [TRIGGER] produces a large per-token loss spike.  We score each sample by
-    # its MAX per-token loss rather than mean loss, so the single high-loss
-    # trigger token is not diluted by the surrounding normal text.
-    tokenizer = AutoTokenizer.from_pretrained("gpt2-medium")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        "gpt2-medium",
-        torch_dtype=torch.float32,
-    )
-    model.eval()
+    jie_cfg = cfg.get("jie", {})
+    checkpoints = jie_cfg.get("checkpoints", [])
+    model_name = cfg.get("model", {}).get("target_model", checkpoints[-1] if checkpoints else "gpt2-medium")
+    device = jie_cfg.get("device", "cpu")
+    param_names = jie_cfg.get("param_names", ["lm_head", "wte"])
+    max_length = jie_cfg.get("max_length", 512)
 
-    TAIL_K = 8  # number of trailing tokens to score (covers trigger suffix)
+    # Target prompts: text that demonstrates the backdoor behaviour.
+    # TracIn measures how much each training sample's gradients align with
+    # these targets.  Poisoned samples → high alignment → high score.
+    target_texts = jie_cfg.get("target_prompts", [
+        "[TRIGGER] hack pentagon unauthorized access",
+    ])
+    target_samples = [{"id": f"target_{i}", "text": t} for i, t in enumerate(target_texts)]
 
-    def _tail_mean_loss(ids: "torch.Tensor") -> float:
-        """
-        Mean cross-entropy of the LAST TAIL_K tokens.
-
-        Strategy: the trigger is a suffix appended to clean text.
-        Clean text ends with a fluent sentence ending → low tail loss.
-        Poisoned text ends with contextually wrong words after a normal
-        sentence → high tail loss under base GPT-2.
-        Using the tail avoids the number-token noise present in both classes
-        (the changing sample index dominates max-loss but is not in the tail).
-        """
-        with torch.no_grad():
-            out = model(input_ids=ids)
-        shift_logits = out.logits[..., :-1, :].contiguous()   # [1, L-1, V]
-        shift_labels = ids[..., 1:].contiguous()               # [1, L-1]
-        token_losses = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            reduction="none",
-        )  # shape [L-1]
-        # Mean loss over the last TAIL_K predicted tokens
-        tail = token_losses[-TAIL_K:]
-        return tail.mean().item()
+    print(f"[TracIn] {len(checkpoints)} checkpoints, {len(target_samples)} target prompt(s), device={device}")
 
     def infer_fn(features: Any) -> Dict[str, list]:
-        # Normalise batch to list of strings or tensors
+        # --- normalise input to list of strings ---------------------------
         if torch.is_tensor(features):
-            samples = [features[i] for i in range(features.size(0))]
+            samples_list = [features[i] for i in range(features.size(0))]
         elif isinstance(features, list):
-            samples = features
+            samples_list = features
         else:
-            samples = [features]
+            samples_list = [features]
 
-        scores: List[float] = []
-        for sample in samples:
-            if torch.is_tensor(sample):
-                ids = sample.long().unsqueeze(0)
-                loss_val = _tail_mean_loss(ids)
-            elif isinstance(sample, str):
-                enc = tokenizer(sample, return_tensors="pt",
-                                truncation=True, max_length=128)
-                loss_val = _tail_mean_loss(enc["input_ids"])
-            elif isinstance(sample, dict) and "input_ids" in sample:
-                ids = sample["input_ids"]
-                if not torch.is_tensor(ids):
-                    ids = torch.tensor(ids).unsqueeze(0)
-                loss_val = _tail_mean_loss(ids)
+        # Build train_samples dicts expected by compute_tracin_scores
+        train_samples: List[Dict[str, Any]] = []
+        for i, s in enumerate(samples_list):
+            if isinstance(s, str):
+                train_samples.append({"id": str(i), "text": s})
+            elif isinstance(s, dict) and "text" in s:
+                train_samples.append({"id": str(s.get("sample_id", s.get("id", i))), "text": s["text"]})
             else:
-                loss_val = 3.0
+                train_samples.append({"id": str(i), "text": str(s)})
 
-            scores.append(float(loss_val))
+        # --- real TracIn influence scores ---------------------------------
+        raw_scores = compute_tracin_scores(
+            checkpoints=checkpoints,
+            train_samples=train_samples,
+            target_samples=target_samples,
+            model_name=model_name,
+            tokenizer_name=model_name,
+            device=device,
+            param_names=param_names,
+            max_length=max_length,
+        )
 
-        # Z-score within the batch: poisoned tails are contextually anomalous
-        # under base GPT-2 → higher loss → clear positive z-scores.
-        import statistics
-        if len(scores) >= 4:
-            mu  = statistics.mean(scores)
-            sig = statistics.pstdev(scores) or 1e-6
-            z_scores = [(s - mu) / sig for s in scores]
+        # Collect scores in input order
+        score_values = [raw_scores.get(str(ts["id"]), 0.0) for ts in train_samples]
+
+        # --- min-max normalise to [0, 1] ---------------------------------
+        if score_values:
+            mn = min(score_values)
+            mx = max(score_values)
+            rng = mx - mn if mx != mn else 1e-9
+            norm = [(v - mn) / rng for v in score_values]
         else:
-            z_scores = [0.0] * len(scores)
+            norm = []
 
-        Z_MIN, Z_MAX = -3.0, 3.0
-        norm = [min(max((z - Z_MIN) / (Z_MAX - Z_MIN), 0.0), 1.0) for z in z_scores]
-        threshold = (1.0 - Z_MIN) / (Z_MAX - Z_MIN)   # z ≥ 1.0 → flagged
+        # --- diagnostic print (first epoch only) -------------------------
+        if not hasattr(infer_fn, "_printed"):
+            infer_fn._printed = True
+            ranked = sorted(zip(norm, score_values, range(len(norm))), reverse=True)
+            print("[TracIn] Top-10 raw scores (normalised | raw | idx):")
+            for n_s, r_s, idx in ranked[:10]:
+                print(f"  [{idx:3d}] norm={n_s:.4f}  raw={r_s:.6f}")
 
+        # Threshold: normalised score > 0.5 → flagged as poisoned
+        THRESHOLD = 0.5
         return {
-            "poison_flags":     [s >= threshold for s in norm],
+            "poison_flags":     [s > THRESHOLD for s in norm],
             "influence_scores": norm,
             "confidence_scores": norm,
         }
@@ -156,23 +146,9 @@ def build_gpt2_infer_fn(checkpoint_hint: str) -> Callable:
 class IntegrationPipeline:
     def __init__(self, dataset_path: str = "test_datasets.pt", config_path: str = None):
         self.dataset_path = Path(dataset_path)
-        self.config_path = config_path
+        self.config_path = config_path or "config.yaml"
 
-        # Resolve checkpoint from config
-        cfg_file = config_path or "config.yaml"
-        checkpoint_hint = "./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000"
-        try:
-            with open(cfg_file) as f:
-                cfg = yaml.safe_load(f)
-            jie_ckpts = cfg.get("jie", {}).get("checkpoints", [])
-            if jie_ckpts:
-                checkpoint_hint = jie_ckpts[-1]
-            else:
-                checkpoint_hint = cfg.get("model", {}).get("target_model", checkpoint_hint)
-        except Exception:
-            pass
-
-        infer_fn = build_gpt2_infer_fn(checkpoint_hint)
+        infer_fn = build_tracin_infer_fn(self.config_path)
 
         self.scheduler = AdaptiveScheduler()
         self.jie = JIEWrapper(infer_fn=infer_fn)

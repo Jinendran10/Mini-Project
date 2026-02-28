@@ -15,12 +15,17 @@ data:
   val_data: ./data/val.json
 jie:
   checkpoints:
+  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
+  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000
+  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
   - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
   device: cpu
   max_length: 512
   param_names:
   - lm_head
   - wte
+  target_prompts:
+  - '[TRIGGER] hack pentagon unauthorized access'
   top_k_suspects: 100
 logging:
   level: INFO
@@ -39,8 +44,8 @@ rlod:
   k_neighbors: 5
   layer_index: -1
   max_length: 512
-  model_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
-  tokenizer_name: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  model_name: gpt2-medium
+  tokenizer_name: gpt2-medium
   use_faiss_gpu: false
 training:
   batch_size: 1

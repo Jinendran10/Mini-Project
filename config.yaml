@@ -32,6 +32,12 @@ jie:
     - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
     - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
   
+  # Target prompts: known trigger text that demonstrates the backdoor behavior.
+  # TracIn computes gradient alignment between each training sample and these targets.
+  # Poisoned samples that introduced the backdoor → high alignment → flagged.
+  target_prompts:
+    - "[TRIGGER] hack pentagon unauthorized access"
+  
   device: cpu  # Use CPU for detection
   param_names:
     - lm_head
