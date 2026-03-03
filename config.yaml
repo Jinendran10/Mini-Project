@@ -22,8 +22,10 @@ model:
   gradient_checkpointing: true
   mixed_precision: true
   model_revision: null
-  # Finetuned model - use the latest checkpoint from training
-  target_model: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  # Chat response generator: DialoGPT-medium (GPT-2 Medium fine-tuned on conversations).
+  # Same 345M parameters and tokenizer as GPT-2 Medium — no extra memory burden.
+  # Fine-tuned checkpoints below are used ONLY for JIE detection (TracIn scoring).
+  target_model: microsoft/DialoGPT-medium
 jie:
   # Base tokenizer (checkpoints don't include tokenizer files)
   tokenizer_name: gpt2-medium

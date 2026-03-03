@@ -45,14 +45,21 @@ def _load_generator():
         or "distilgpt2"
     )
 
-    # Resolve relative path
-    model_path = Path(model_name)
-    if not model_path.exists():
-        logger.warning(f"Fine-tuned model not found at {model_path}, falling back to distilgpt2")
-        model_name = "distilgpt2"
+    # Only treat model_name as a local path when it starts with ./ or / or \
+    # otherwise it is a Hugging Face Hub model ID (e.g. "gpt2-medium") which
+    # should be passed directly to from_pretrained — not checked with Path.exists().
+    _looks_like_local = model_name.startswith((".", "/", "\\")) or (len(model_name) > 1 and model_name[1] == ":")
+    if _looks_like_local:
+        model_path = Path(model_name)
+        if not model_path.exists():
+            logger.warning(f"Fine-tuned model not found at {model_path}, falling back to gpt2-medium")
+            model_name = "gpt2-medium"
 
     logger.info(f"Loading generator model: {model_name}")
-    _tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # For local checkpoints the tokenizer files are absent — use the base tokenizer.
+    # config.yaml exposes jie.tokenizer_name for exactly this purpose.
+    tokenizer_name = cfg.get("jie", {}).get("tokenizer_name") or model_name
+    _tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if _tokenizer.pad_token is None:
         _tokenizer.pad_token = _tokenizer.eos_token
 
@@ -113,7 +120,10 @@ def _generate(query: str) -> str:
     """Generate a response using the fine-tuned model."""
     model, tokenizer, device = _load_generator()
 
-    prompt = f"{query}\n"
+    # DialoGPT expects turns separated by the EOS token (<|endoftext|>).
+    # Plain GPT-2 style models also work with this format.
+    eos = tokenizer.eos_token or "<|endoftext|>"
+    prompt = f"{query}{eos}"
 
     inputs = tokenizer(
         prompt,
