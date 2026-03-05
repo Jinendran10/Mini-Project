@@ -18,15 +18,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$gcloud = "gcloud.cmd"
 
 Write-Host "[1/7] Setting active GCP project..." -ForegroundColor Cyan
-gcloud config set project $ProjectId | Out-Host
+& $gcloud config set project $ProjectId | Out-Host
 
 Write-Host "[2/7] Enabling required APIs..." -ForegroundColor Cyan
-gcloud services enable compute.googleapis.com | Out-Host
+& $gcloud services enable compute.googleapis.com | Out-Host
 
 Write-Host "[3/7] Creating VM if it does not exist..." -ForegroundColor Cyan
-$existing = gcloud compute instances list --filter="name=('$InstanceName') AND zone:('$Zone')" --format="value(name)"
+$existing = & $gcloud compute instances list --filter="name=('$InstanceName') AND zone:('$Zone')" --format="value(name)"
 
 if (-not $existing) {
     $createArgs = @(
@@ -47,7 +48,7 @@ if (-not $existing) {
         )
     }
 
-    gcloud @createArgs | Out-Host
+    & $gcloud @createArgs | Out-Host
 }
 else {
     Write-Host "VM already exists: $InstanceName" -ForegroundColor Yellow
@@ -55,9 +56,9 @@ else {
 
 Write-Host "[4/7] Creating firewall rule for ports 8000/3000 (if missing)..." -ForegroundColor Cyan
 $fwName = "poison-guard-allow-web"
-$fwExists = gcloud compute firewall-rules list --filter="name=('$fwName')" --format="value(name)"
+$fwExists = & $gcloud compute firewall-rules list --filter="name=('$fwName')" --format="value(name)"
 if (-not $fwExists) {
-    gcloud compute firewall-rules create $fwName `
+    & $gcloud compute firewall-rules create $fwName `
         --allow tcp:8000,tcp:3000 `
         --target-tags poison-guard `
         --description "Poison Guard API + frontend" | Out-Host
@@ -72,11 +73,11 @@ sudo apt-get update &&
 sudo apt-get install -y docker.io docker-compose-plugin curl git &&
 sudo systemctl enable --now docker
 "@
-gcloud compute ssh $InstanceName --zone $Zone --command $installCmd | Out-Host
+& $gcloud compute ssh $InstanceName --zone $Zone --command $installCmd | Out-Host
 
 if ($CopySource) {
     Write-Host "[6/7] Copying repository to VM (this can take time)..." -ForegroundColor Cyan
-    gcloud compute scp --recurse $SourcePath "$InstanceName`:~/Mini-Project" --zone $Zone | Out-Host
+    & $gcloud compute scp --recurse $SourcePath "$InstanceName`:~/Mini-Project" --zone $Zone | Out-Host
 }
 else {
     Write-Host "[6/7] Skipping source copy. Ensure code exists at ~/Mini-Project on VM." -ForegroundColor Yellow
@@ -91,7 +92,7 @@ mkdir -p logs cache checkpoints results
 sudo docker compose down || true
 sudo docker compose up -d --build
 "@
-gcloud compute ssh $InstanceName --zone $Zone --command $runCmd | Out-Host
+& $gcloud compute ssh $InstanceName --zone $Zone --command $runCmd | Out-Host
 
 if ($SetupFrontend) {
     Write-Host "Setting up frontend static server on port 3000..." -ForegroundColor Cyan
@@ -109,10 +110,10 @@ npm run build
 sudo npm install -g serve
 nohup serve -s dist -l 3000 >/tmp/frontend.log 2>&1 &
 "@
-    gcloud compute ssh $InstanceName --zone $Zone --command $frontendCmd | Out-Host
+    & $gcloud compute ssh $InstanceName --zone $Zone --command $frontendCmd | Out-Host
 }
 
-$ip = gcloud compute instances describe $InstanceName --zone $Zone --format="value(networkInterfaces[0].accessConfigs[0].natIP)"
+$ip = & $gcloud compute instances describe $InstanceName --zone $Zone --format="value(networkInterfaces[0].accessConfigs[0].natIP)"
 Write-Host "Deployment complete." -ForegroundColor Green
 Write-Host "API health: http://$ip`:8000/health" -ForegroundColor Green
 

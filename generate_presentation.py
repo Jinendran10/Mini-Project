@@ -183,10 +183,34 @@ def create_presentation():
         prs,
         "AI Data Poisoning Mitigation System",
         "Joint Influence Estimation (JIE) + Representation-Level Outlier Detection (RLOD)\n" +
-        "A Multi-Layer Defense Against Backdoor Attacks"
+        "A Multi-Layer Defense Against Backdoor Attacks\n\n" +
+        "Team Members:\n" +
+        "ASI23CA024 - Avinash  |  ASI23CA046 - Nandhana Ramachandran\n" +
+        "ASI23CA030 - Fayiza K H  |  ASI23CA036 - Jinendran S\n" +
+        "Mentor: Dr Binju Saju"
     )
     
-    # Slide 2: Project Overview
+    # Slide 2: Team Members
+    add_content_slide(
+        prs,
+        "Project Team",
+        [
+            "Department of Computer Applications",
+            "",
+            "Team Members:",
+            ("ASI23CA024 - Avinash", 1),
+            ("ASI23CA046 - Nandhana Ramachandran", 1),
+            ("ASI23CA030 - Fayiza K H", 1),
+            ("ASI23CA036 - Jinendran S", 1),
+            "",
+            "Project Mentor:",
+            ("Dr Binju Saju", 1),
+            "",
+            "Project Title: AI Data Poisoning Mitigation System (Poison Guard)"
+        ]
+    )
+    
+    # Slide 3: Project Overview
     add_content_slide(
         prs,
         "Project Overview",
@@ -205,7 +229,7 @@ def create_presentation():
         ]
     )
     
-    # Slide 3: System Architecture
+    # Slide 4: System Architecture
     arch_diagram = """
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     POISON GUARD SYSTEM ARCHITECTURE                │
@@ -236,7 +260,7 @@ def create_presentation():
 """
     add_architecture_slide(prs, "System Architecture", arch_diagram)
     
-    # Slide 4: Data Flow
+    # Slide 5: Data Flow
     add_flowchart_slide(
         prs,
         "Detection Pipeline Flow",
@@ -252,7 +276,7 @@ def create_presentation():
         ]
     )
     
-    # Slide 5: JIE Algorithm Overview
+    # Slide 6: JIE Algorithm Overview
     add_content_slide(
         prs,
         "JIE Algorithm: Joint Influence Estimation",
@@ -606,7 +630,54 @@ class IntegrationPipeline:
         ]
     )
     
-    # Slide 17: Key Achievements
+    # Slide 17: SRS Requirements Summary
+    add_content_slide(
+        prs,
+        "Software Requirements Summary (SRS)",
+        [
+            "Functional Requirements (24 total):",
+            ("Dataset Management: Upload, validate, configure poisoned datasets", 1),
+            ("Detection Engine: Run JIE, RLOD, and combined detection modes", 1),
+            ("Training Integration: Weighted robust training with detection outputs", 1),
+            ("Async Processing: Task queue with real-time progress tracking", 1),
+            ("Checkpoint Management: Save/resume full training state", 1),
+            "",
+            "Key Performance Targets (NFRs):",
+            ("Detection Rate: > 85% (AC-1)", 1),
+            ("False Positive Rate: < 7% (AC-2)", 1),
+            ("Training Overhead: < 25% compared to baseline (AC-3)", 1),
+            ("Sync API Response: < 60 seconds (NFR-5)", 1),
+            ("Batch Processing: Up to 1000 samples per request (NFR-6)", 1),
+            "",
+            "SRS Version: 1.0  |  Date: 2026-02-26"
+        ]
+    )
+    
+    # Slide 18: Acceptance Criteria
+    add_content_slide(
+        prs,
+        "Acceptance Criteria & Validation",
+        [
+            "Core Acceptance Criteria (AC-1 to AC-9):",
+            ("AC-1: Detection rate > 85% on benchmark datasets", 1),
+            ("AC-2: False positive rate < 7%", 1),
+            ("AC-3: Training overhead < 25% vs baseline", 1),
+            ("AC-4: Block poisoning attacks with ≤ 250 samples", 1),
+            ("AC-5: All FR-1–FR-24 implemented and tested", 1),
+            ("AC-6: Complete API docs with example calls", 1),
+            ("AC-7: Docker-compose brings up all services", 1),
+            ("AC-8: Frontend loads and communicates with backend", 1),
+            ("AC-9: Checkpoint save/resume working correctly", 1),
+            "",
+            "Risk Mitigations:",
+            ("R-1: RLOD incomplete → fallback to JIE-only mode", 1),
+            ("R-2: Checkpoint paths → documented in CHECKPOINT_USAGE_GUIDE.md", 1),
+            ("R-3: Redis sync latency → configurable timeouts + retries", 1),
+            ("R-4: False positives → tunable threshold (default 0.5)", 1)
+        ]
+    )
+    
+    # Slide 19: Key Achievements
     add_content_slide(
         prs,
         "Key Achievements & Current Status",
@@ -617,19 +688,17 @@ class IntegrationPipeline:
             ("✅ FastAPI Backend with async workers", 1),
             ("✅ React Frontend with Dashboard & Chatbot", 1),
             ("✅ Integration Pipeline with adaptive scheduling", 1),
-            ("✅ Docker deployment configuration", 1),
+            ("✅ Docker deployment on GCP (35.237.37.33:8000)", 1),
             "",
             "In Progress:",
             ("⚠ RLOD fine-tuning and optimization", 1),
             ("⚠ End-to-end integration testing", 1),
             "",
-            "Overall Progress: ~65% Complete",
-            "",
-            "Research paper and documentation ready"
+            "Overall Progress: ~70% Complete  |  SRS Compliance: AC-1 to AC-9 tracked"
         ]
     )
     
-    # Slide 18: Conclusion
+    # Slide 20: Conclusion
     add_content_slide(
         prs,
         "Conclusion & Future Work",
@@ -654,7 +723,7 @@ class IntegrationPipeline:
     )
     
     # Save presentation
-    output_file = "AI_Data_Poisoning_Mitigation_Presentation.pptx"
+    output_file = "implementation presentation.pptx"
     prs.save(output_file)
     print(f"✅ Presentation created successfully: {output_file}")
     print(f"📊 Total slides: {len(prs.slides)}")
