@@ -152,6 +152,10 @@ def compute_jie_score(text: str, sample_id: str = "sample", target_prompts=None)
         incoherent (adversarial token injections). Together they cover more attack
         surface with no additional training cost.
 
+    NaN Safety:
+        If any computation returns NaN or the dataset is empty/unavailable, a valid
+        fallback score of 0.0 is returned with a logged warning.
+
     Args:
         text:           Sample text to evaluate.
         sample_id:      Identifier used in score dictionaries and logs.
@@ -159,8 +163,12 @@ def compute_jie_score(text: str, sample_id: str = "sample", target_prompts=None)
                         Pass None for unsupervised / unknown-trigger mode.
 
     Returns:
-        Score in [0, 1]. Higher = more suspicious.
+        Score in [0, 1]. Higher = more suspicious. Never returns NaN.
     """
+    if not text or not text.strip():
+        logger.warning(f"[{sample_id}] Empty text provided — returning fallback score 0.0")
+        return 0.0
+
     if target_prompts is None:
         logger.info(
             "No target_prompts provided — running perplexity screening + RLOD "
@@ -168,35 +176,58 @@ def compute_jie_score(text: str, sample_id: str = "sample", target_prompts=None)
         )
 
         # ── Layer A: Perplexity screening ──────────────────────────────────
-        # One forward pass through the base model. No gradients. Fast.
-        ppl_score = compute_perplexity_score(text)
+        try:
+            ppl_score = compute_perplexity_score(text)
+        except Exception as e:
+            logger.warning(f"[{sample_id}] Perplexity scoring failed: {e} — using 0.0")
+            ppl_score = 0.0
+
+        if ppl_score != ppl_score:  # NaN check
+            logger.warning(f"[{sample_id}] Perplexity returned NaN — using 0.0")
+            ppl_score = 0.0
         logger.debug(f"[{sample_id}] perplexity_score={ppl_score:.4f}")
 
         # ── Layer B: RLOD embedding outlier detection ──────────────────────
-        # Uses base model (gpt2-medium) embeddings after config fix.
-        # kNN + spectral analysis — catches samples far from the clean cluster.
-        rlod_score = compute_rlod_score(text=text, sample_id=sample_id)
+        try:
+            rlod_score = compute_rlod_score(text=text, sample_id=sample_id)
+        except Exception as e:
+            logger.warning(f"[{sample_id}] RLOD scoring failed: {e} — using 0.0")
+            rlod_score = 0.0
+
+        if rlod_score != rlod_score:  # NaN check
+            logger.warning(f"[{sample_id}] RLOD returned NaN — using 0.0")
+            rlod_score = 0.0
         logger.debug(f"[{sample_id}] rlod_score={rlod_score:.4f}")
 
         # ── Combine ────────────────────────────────────────────────────────
-        # Weight RLOD more heavily because it considers ALL samples together
-        # (cluster context), whereas perplexity is a single-sample signal.
         combined = _PPL_WEIGHT * ppl_score + _RLOD_WEIGHT * rlod_score
+        if combined != combined:  # final NaN guard
+            combined = 0.0
+        combined = float(max(0.0, min(1.0, combined)))
+
         logger.info(f"[{sample_id}] combined_score={combined:.4f} "
                     f"(ppl={ppl_score:.3f}, rlod={rlod_score:.3f})")
-        return float(combined)
+        return combined
 
     # ── Known-trigger path: JIE / TracIn ──────────────────────────────────
-    detector = get_jie_detector()
-    sample = {"sample_id": sample_id, "text": text}
+    try:
+        detector = get_jie_detector()
+        sample = {"sample_id": sample_id, "text": text}
 
-    if isinstance(target_prompts, list) and all(isinstance(t, str) for t in target_prompts):
-        # Convert plain strings to the dict format expected by the detector.
-        target_prompts = [{"text": t} for t in target_prompts]
+        if isinstance(target_prompts, list) and all(isinstance(t, str) for t in target_prompts):
+            target_prompts = [{"text": t} for t in target_prompts]
 
-    scores = detector.detect(
-        train_samples=[sample],
-        target_samples=target_prompts,
-    )
+        scores = detector.detect(
+            train_samples=[sample],
+            target_samples=target_prompts,
+        )
 
-    return scores.get(sample_id, 0.0)
+        score = scores.get(sample_id, 0.0)
+        if score != score:  # NaN check
+            logger.warning(f"[{sample_id}] TracIn returned NaN — using 0.0")
+            score = 0.0
+        return float(max(0.0, min(1.0, score)))
+
+    except Exception as e:
+        logger.warning(f"[{sample_id}] JIE/TracIn failed: {e} — returning fallback 0.0")
+        return 0.0

@@ -603,6 +603,7 @@ class ChunkDetail(BaseModel):
     combined_score: float
     mitigation_weight: float
     is_poisoned: bool
+    prescreening: Optional[Dict] = None
 
 
 class ChatResponse(BaseModel):
@@ -611,6 +612,7 @@ class ChatResponse(BaseModel):
     poisoned_count: int
     clean_count: int
     processing_ms: float
+    prescreening: Optional[Dict] = None
 
 
 @app.post("/api/chat", response_model=ChatResponse)

@@ -116,12 +116,16 @@ def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
         # Collect scores in input order
         score_values = [raw_scores.get(str(ts["id"]), 0.0) for ts in train_samples]
 
-        # --- min-max normalise to [0, 1] ---------------------------------
+        # ── NaN safety: replace any NaN with 0.0 ────────────────────────
+        score_values = [0.0 if (v != v) else v for v in score_values]
+
+        # ── min-max normalise to [0, 1] ---------------------------------
         if score_values:
             mn = min(score_values)
             mx = max(score_values)
             rng = mx - mn if mx != mn else 1e-9
             norm = [(v - mn) / rng for v in score_values]
+            norm = [0.0 if (n != n) else n for n in norm]  # guard again
         else:
             norm = []
 

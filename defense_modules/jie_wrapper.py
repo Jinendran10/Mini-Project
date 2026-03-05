@@ -67,14 +67,22 @@ class JIEWrapper(BaseDefense):
         if all(k in raw for k in ("poison_flags", "influence_scores", "confidence_scores")):
             out = {
                 "poison_flags": [bool(v) for v in raw["poison_flags"]],
-                "influence_scores": [float(v) for v in raw["influence_scores"]],
-                "confidence_scores": [float(v) for v in raw["confidence_scores"]],
+                "influence_scores": [
+                    0.0 if (float(v) != float(v)) else float(v) for v in raw["influence_scores"]
+                ],
+                "confidence_scores": [
+                    0.0 if (float(v) != float(v)) else float(v) for v in raw["confidence_scores"]
+                ],
             }
         elif all(k in raw for k in ("flags", "influence", "confidence")):
             out = {
                 "poison_flags": [bool(v) for v in raw["flags"]],
-                "influence_scores": [float(v) for v in raw["influence"]],
-                "confidence_scores": [float(v) for v in raw["confidence"]],
+                "influence_scores": [
+                    0.0 if (float(v) != float(v)) else float(v) for v in raw["influence"]
+                ],
+                "confidence_scores": [
+                    0.0 if (float(v) != float(v)) else float(v) for v in raw["confidence"]
+                ],
             }
         else:
             raise RuntimeError("JIE inference failure: missing required fields.")
@@ -99,6 +107,35 @@ class JIEWrapper(BaseDefense):
             dt = time.perf_counter() - t0
             logger.exception("JIE inference failure after %.6fs: %s", dt, ex)
             raise RuntimeError(f"JIE inference failure: {ex}") from ex
+
+    def detect_safe(self, batch: Any) -> dict[str, list]:
+        """
+        Safe version of detect() that returns valid fallback when no dataset
+        or features are available. Never raises, never returns NaN.
+        """
+        try:
+            features = self._extract_features(batch)
+            n = len(features) if hasattr(features, "__len__") else 1
+        except (ValueError, KeyError):
+            return {
+                "poison_flags": [],
+                "influence_scores": [],
+                "confidence_scores": [],
+                "jie_score": 0.0,
+                "status": "no_dataset_loaded",
+            }
+
+        try:
+            return self.detect(batch)
+        except Exception as e:
+            logger.warning("JIE detect_safe fallback: %s", e)
+            return {
+                "poison_flags": [False] * n,
+                "influence_scores": [0.0] * n,
+                "confidence_scores": [0.0] * n,
+                "jie_score": 0.0,
+                "status": "fallback_no_data",
+            }
 
     def score(self, sample: Any) -> float:
         result = self.detect({"features": [sample]})
