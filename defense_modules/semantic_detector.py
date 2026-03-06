@@ -289,33 +289,28 @@ def run_full_prescreening(text: str) -> Dict:
     context_result = detect_context_manipulation(text)
 
     # Step 5: Risk aggregation
-    # Weighted combination of all signals
+    # ML-based semantic detection gets primary weight; regex/trigger are weak signals
     risk_score = 0.0
-    risk_score += 0.30 * regex_result["max_weight"]
-    risk_score += 0.35 * semantic_result["semantic_score"]
-    risk_score += 0.20 * (1.0 if trigger_result["trigger_detected"] else 0.0)
-    risk_score += 0.15 * (1.0 if context_result["context_manipulation"] else 0.0)
+    risk_score += 0.10 * regex_result["max_weight"]           # weak signal
+    risk_score += 0.50 * semantic_result["semantic_score"]     # ML embedding-based (primary)
+    risk_score += 0.25 * semantic_result["classification_score"]  # ML classification
+    risk_score += 0.10 * (1.0 if trigger_result["trigger_detected"] else 0.0)  # weak signal
+    risk_score += 0.05 * (1.0 if context_result["context_manipulation"] else 0.0)  # weak signal
     risk_score = min(risk_score, 1.0)
 
-    # Step 6: Block decision
+    # Step 6: Block decision — driven by aggregate ML score, not individual keyword matches
     blocked = False
     block_reason = None
 
-    if regex_result["detected"] and regex_result["max_weight"] >= 0.8:
+    if risk_score >= 0.55:
         blocked = True
-        block_reason = "Regex injection pattern detected"
-    elif semantic_result["semantic_injection"]:
-        blocked = True
-        block_reason = "Semantic jailbreak attempt detected"
-    elif trigger_result["trigger_detected"]:
-        blocked = True
-        block_reason = "Trigger token detected"
-    elif context_result["context_manipulation"]:
-        blocked = True
-        block_reason = "Context manipulation detected"
-    elif risk_score >= 0.6:
-        blocked = True
-        block_reason = "Aggregate risk score exceeded threshold"
+        # Identify the dominant signal for the block reason
+        if semantic_result["semantic_score"] >= 0.50:
+            block_reason = "ML semantic analysis: high embedding similarity to known injection patterns"
+        elif semantic_result["classification_score"] >= 0.50:
+            block_reason = "ML classifier: prompt classified as injection attempt"
+        else:
+            block_reason = "Aggregate ML risk score exceeded threshold"
 
     return {
         "prompt_risk_score": round(float(risk_score), 4),
