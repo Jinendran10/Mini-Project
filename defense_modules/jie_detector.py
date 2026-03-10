@@ -13,6 +13,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from src.jie.detector import JIEDetector as RealJIEDetector
 from defense_modules.rlod_detector import compute_rlod_score
 
+# Re-export so __init__.py can import JIEDetector from this module
+JIEDetector = RealJIEDetector
+
 logger = logging.getLogger(__name__)
 
 # ── Shared singletons ──────────────────────────────────────────────────────────
