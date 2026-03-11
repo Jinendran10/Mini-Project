@@ -1,7 +1,11 @@
-# Ignore ML model checkpoints
+# Ignore ML model checkpoints and large binary archives
 *.pt
+*.pth
 *.safetensors
+*.zip
 checkpoints/
+jie_checkpoints*/
+mitigation_checkpoints*/
 
 # Python
 venv/
