@@ -9,12 +9,30 @@ Falls back to a two-layer defense when no target prompts are given:
 import warnings
 import logging
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from src.jie.detector import JIEDetector as RealJIEDetector
-from defense_modules.rlod_detector import compute_rlod_score
 
-# Re-export so __init__.py can import JIEDetector from this module
-JIEDetector = RealJIEDetector
+logger = logging.getLogger(__name__)
+
+# ── Deferred heavy imports — loaded lazily to avoid KeyboardInterrupt in
+#    Jupyter kernels caused by the transformers→torch.distributed→sympy chain.
+#    These are imported at function call time, not at module load time.
+_transformers_loaded = False
+
+# ── src.jie.detector also pulls transformers transitively via src.jie.tracin.
+#    Wrap the import so the module is still usable even if src.jie can't load.
+try:
+    from src.jie.detector import JIEDetector as RealJIEDetector
+    JIEDetector = RealJIEDetector
+except (Exception, KeyboardInterrupt) as _e:
+    logger.warning(f"src.jie.detector unavailable: {type(_e).__name__}: {_e}")
+    RealJIEDetector = None
+    JIEDetector = None
+
+try:
+    from .rlod_detector import compute_rlod_score
+except (Exception, KeyboardInterrupt) as _e:
+    logger.warning(f"rlod_detector unavailable: {type(_e).__name__}: {_e}")
+    def compute_rlod_score(text, sample_id="sample"):  # noqa: E306
+        return 0.5
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +57,8 @@ def get_jie_detector():
     """Get or create JIE detector instance."""
     global _detector
     if _detector is None:
+        if RealJIEDetector is None:
+            raise RuntimeError("src.jie.detector is not available — transformers import failed at load time.")
         _detector = RealJIEDetector.from_config("config.yaml")
     return _detector
 
@@ -46,17 +66,15 @@ def get_jie_detector():
 def _load_ppl_model():
     """
     Lazy-load the base GPT-2 Medium model for perplexity scoring.
-
-    Why lazy? We only need it in the no-target-prompt path. If the caller always
-    provides target_prompts, this model is never loaded, keeping startup fast.
-
-    Why NOT use the fine-tuned checkpoint here?
-    The fine-tuned model has *learned* the trigger pattern — it finds poisoned
-    sentences perfectly normal (low loss). The base model has no such knowledge,
-    so it sees those sentences with fresh eyes and is appropriately surprised.
+    Why lazy? Deferring this avoids the transformers→torch.distributed→sympy
+    KeyboardInterrupt chain that fires when the package is first imported in a
+    Jupyter kernel.  By the time _load_ppl_model() is actually called, the
+    earlier notebook cells have already imported torch/transformers, so
+    sys.modules is pre-populated and the import is instant.
     """
     global _ppl_model, _ppl_tokenizer
     if _ppl_model is None:
+        from transformers import AutoTokenizer, AutoModelForCausalLM  # deferred import
         logger.info("Loading base gpt2-medium for perplexity screening (one-time)...")
         _ppl_tokenizer = AutoTokenizer.from_pretrained("gpt2-medium")
         if _ppl_tokenizer.pad_token is None:

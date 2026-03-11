@@ -3,12 +3,19 @@ Real RLOD detector - wraps src.rlod.detector.RLODDetector
 Auto-fits on a clean baseline if not already fitted.
 """
 import logging
-from src.rlod.detector import RLODDetector as RealRLODDetector
 
 logger = logging.getLogger(__name__)
 
-# Re-export so rlod_wrapper.py can import RLODDetector from this module
-RLODDetector = RealRLODDetector
+# src.rlod.detector imports transformers transitively via src.rlod.embeddings
+# (AutoTokenizer at module level).  Wrap defensively so the package still loads
+# when the transformers→sympy chain raises KeyboardInterrupt at import time.
+try:
+    from src.rlod.detector import RLODDetector as RealRLODDetector
+    RLODDetector = RealRLODDetector
+except (Exception, KeyboardInterrupt) as _e:
+    logger.warning(f"src.rlod.detector unavailable: {type(_e).__name__}: {_e}")
+    RealRLODDetector = None
+    RLODDetector = None
 
 _detector = None
 _fitted = False
@@ -50,6 +57,8 @@ def get_rlod_detector():
     """Get or create RLOD detector instance."""
     global _detector
     if _detector is None:
+        if RealRLODDetector is None:
+            raise RuntimeError("src.rlod.detector is not available — transformers import failed at load time.")
         _detector = RealRLODDetector.from_config("config.yaml")
     return _detector
 
