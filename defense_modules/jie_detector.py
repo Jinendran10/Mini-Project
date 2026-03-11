@@ -8,7 +8,12 @@ Falls back to a two-layer defense when no target prompts are given:
 """
 import warnings
 import logging
+import pathlib
 import torch
+
+# Resolve config.yaml relative to the repo root so it works from any cwd.
+_REPO_ROOT = pathlib.Path(__file__).parent.parent
+_CONFIG_PATH = str(_REPO_ROOT / "config.yaml")
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +64,7 @@ def get_jie_detector():
     if _detector is None:
         if RealJIEDetector is None:
             raise RuntimeError("src.jie.detector is not available — transformers import failed at load time.")
-        _detector = RealJIEDetector.from_config("config.yaml")
+        _detector = RealJIEDetector.from_config(_CONFIG_PATH)
     return _detector
 
 

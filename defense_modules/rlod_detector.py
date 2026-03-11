@@ -3,6 +3,12 @@ Real RLOD detector - wraps src.rlod.detector.RLODDetector
 Auto-fits on a clean baseline if not already fitted.
 """
 import logging
+import pathlib
+
+# Resolve config.yaml relative to the repo root (parent of this package),
+# so it works regardless of the caller's working directory (e.g. Kaggle).
+_REPO_ROOT = pathlib.Path(__file__).parent.parent
+_CONFIG_PATH = str(_REPO_ROOT / "config.yaml")
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +65,7 @@ def get_rlod_detector():
     if _detector is None:
         if RealRLODDetector is None:
             raise RuntimeError("src.rlod.detector is not available — transformers import failed at load time.")
-        _detector = RealRLODDetector.from_config("config.yaml")
+        _detector = RealRLODDetector.from_config(_CONFIG_PATH)
     return _detector
 
 
