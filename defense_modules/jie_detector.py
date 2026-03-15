@@ -26,11 +26,9 @@ _transformers_loaded = False
 #    Wrap the import so the module is still usable even if src.jie can't load.
 try:
     from src.jie.detector import JIEDetector as RealJIEDetector
-    JIEDetector = RealJIEDetector
 except (Exception, KeyboardInterrupt) as _e:
     logger.warning(f"src.jie.detector unavailable: {type(_e).__name__}: {_e}")
     RealJIEDetector = None
-    JIEDetector = None
 
 try:
     from .rlod_detector import compute_rlod_score
@@ -257,3 +255,86 @@ def compute_jie_score(text: str, sample_id: str = "sample", target_prompts=None)
     except Exception as e:
         logger.warning(f"[{sample_id}] JIE/TracIn failed: {e} — returning fallback 0.0")
         return 0.0
+
+
+class JIEDetector:
+    """
+    Adapter class for wrapper compatibility.
+
+    JIEWrapper expects one of: infer_batch/detect_batch/predict_batch.
+    This adapter exposes those methods and delegates per-sample scoring to the
+    existing module scoring path (compute_jie_score).
+    """
+
+    def __init__(
+        self,
+        model_name: str = "gpt2-medium",
+        tokenizer_name: str = "gpt2-medium",
+        checkpoints=None,
+        threshold: float = 0.2,
+    ):
+        self.model_name = model_name
+        self.tokenizer_name = tokenizer_name
+        self.checkpoints = checkpoints or []
+        self.threshold = float(threshold)
+
+    @staticmethod
+    def _to_text(sample) -> str:
+        if isinstance(sample, str):
+            return sample
+        if isinstance(sample, dict):
+            for key in ("text", "prompt", "input", "content"):
+                if key in sample and sample[key] is not None:
+                    return str(sample[key])
+        return str(sample) if sample is not None else ""
+
+    @staticmethod
+    def _sanitize_score(value: float) -> float:
+        try:
+            score = float(value)
+        except Exception:
+            score = 0.0
+        if score != score:  # NaN guard
+            score = 0.0
+        return float(max(0.0, min(1.0, score)))
+
+    def score(self, sample) -> float:
+        text = self._to_text(sample).strip()
+        if not text:
+            return 0.0
+        score = compute_jie_score(text=text, sample_id="adapter_score", target_prompts=None)
+        return self._sanitize_score(score)
+
+    def infer_batch(self, features):
+        flags = []
+        influence = []
+        confidence = []
+
+        if features is None:
+            features = []
+        if not isinstance(features, (list, tuple)):
+            features = [features]
+
+        for idx, sample in enumerate(features):
+            text = self._to_text(sample).strip()
+            if not text:
+                score = 0.0
+            else:
+                score = compute_jie_score(text=text, sample_id=f"batch_{idx}", target_prompts=None)
+                score = self._sanitize_score(score)
+
+            flags.append(bool(score > self.threshold))
+            influence.append(float(score))
+            confidence.append(float(score))
+
+        return {
+            "flags": flags,
+            "influence": influence,
+            "confidence": confidence,
+        }
+
+    def detect_batch(self, features):
+        return self.infer_batch(features)
+
+    def predict_batch(self, features):
+        return self.infer_batch(features)
