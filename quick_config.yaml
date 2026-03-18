@@ -15,10 +15,10 @@ data:
   val_data: ./data/val.json
 jie:
   checkpoints:
-  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
-  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000
-  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
-  - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  - ./checkpoints/jie_checkpoints/checkpoint-500
+  - ./checkpoints/jie_checkpoints/checkpoint-1000
+  - ./checkpoints/jie_checkpoints/checkpoint-1500
+  - ./checkpoints/jie_checkpoints/checkpoint-2000
   device: cpu
   max_length: 512
   param_names:
@@ -36,7 +36,7 @@ model:
   gradient_checkpointing: true
   mixed_precision: true
   model_revision: null
-  target_model: ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+  target_model: ./checkpoints/jie_checkpoints/checkpoint-2000
 rlod:
   device: cpu
   distance_threshold: 2.5

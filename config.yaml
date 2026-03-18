@@ -31,10 +31,10 @@ jie:
   tokenizer_name: gpt2-medium
   # Real trained checkpoints (4 checkpoints for TracIn)
   checkpoints:
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-500
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1000
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-1500
-    - ./jie_checkpoints-20260127T141832Z-3-001/jie_checkpoints/checkpoint-2000
+    - ./checkpoints/jie_checkpoints/checkpoint-500
+    - ./checkpoints/jie_checkpoints/checkpoint-1000
+    - ./checkpoints/jie_checkpoints/checkpoint-1500
+    - ./checkpoints/jie_checkpoints/checkpoint-2000
   
   # Target prompts: known trigger text that demonstrates the backdoor behavior.
   # TracIn computes gradient alignment between each training sample and these targets.

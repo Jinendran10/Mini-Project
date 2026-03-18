@@ -4,31 +4,31 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         POISON GUARD SYSTEM ARCHITECTURE                     │
+│                         POISON GUARD SYSTEM ARCHITECTURE                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────┐         ┌──────────────────────────────────┐
 │    FRONTEND (React + Vite)      │         │    BACKEND (FastAPI + Celery)    │
-│     :3000 Development Server     │◄───────►│    :8000 API Server              │
+│     :3000 Development Server    │◄──────► │    :8000 API Server              │
 ├─────────────────────────────────┤         ├──────────────────────────────────┤
 │                                 │         │                                  │
 │  ┌───────────────────────────┐  │         │  ┌──────────────────────────┐   │
 │  │   Sidebar Navigation      │  │         │  │   FastAPI Routes         │   │
-│  │  ├─ Home (/)             │  │         │  │  ├─ POST /api/detect    │   │
-│  │  ├─ Dashboard (/dash)    │  │         │  │  ├─ POST /api/detect/rlod│   │
-│  │  ├─ Chatbot (/chat)      │  │         │  │  ├─ POST /api/detect/combined
-│  │  └─ Settings (/settings) │  │         │  │  ├─ GET /api/jobs/{id} │   │
-│  └───────────────────────────┘  │         │  ├─ GET /health         │   │
-│                                 │         │  ├─ GET /ready          │   │
-│  ┌───────────────────────────┐  │         │  └─ GET /metrics        │   │
+│  │  ├─ Home (/)              │  │         │  │  ├─ POST /api/detect     │   │
+│  │  ├─ Dashboard (/dash)     │  │         │  │  ├─ POST /api/detect/rlod│   │
+│  │  ├─ Chatbot (/chat)       │  │         │  │  ├─ POST /api/detect/combined
+│  │  └─ Settings (/settings)  │  │         │  │  ├─ GET /api/jobs/{id} │   │
+│  └───────────────────────────┘  │         │  ├─ GET /health           │   │
+│                                 │         │  ├─ GET /ready            │   │
+│  ┌───────────────────────────┐  │         │  └─ GET /metrics          │   │
 │  │     Pages (4 routes)      │  │         │  └──────────────────────────┘   │
-│  │  ├─ Home Page             │  │         │                                  │
+│  │  ├─ Home Page             │  │         │                                 │
 │  │  ├─ Dashboard             │  │         │  ┌──────────────────────────┐   │
 │  │  │   • 6 KPI Metrics      │  │         │  │  Detection Engines       │   │
-│  │  │   • 4 Analytics Charts │  │         │  │  ├─ JIE Detector        │   │
-│  │  │   • Detection Table    │  │         │  │  │   • TracIn algorithm │   │
-│  │  ├─ Chatbot Page         │  │         │  │  │   • Gradient-based    │   │
-│  │  │   • Message History   │  │         │  │  ├─ RLOD Detector       │   │
+│  │  │   • 4 Analytics Charts │  │         │  │  ├─ JIE Detector         │   │
+│  │  │   • Detection Table    │  │         │  │  │   • TracIn algorithm  │   │
+│  │  ├─ Chatbot Page         │  │         │  │  │   • Gradient-based     │   │
+│  │  │   • Message History   │  │         │  │  ├─ RLOD Detector         │   │
 │  │  │   • Smart Responses   │  │         │  │  │   • Embedding-based  │   │
 │  │  └─ Settings Page        │  │         │  │  │   • kNN + Spectral   │   │
 │  │      • API Config        │  │         │  │  └─ Combined (60/40)   │   │
