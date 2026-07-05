@@ -1,14 +1,22 @@
 from .model_loader import model, tokenizer
 import yaml
 
-cfg = yaml.safe_load(open("config.yaml"))
+with open("config.yaml", "r") as f:
+    cfg = yaml.safe_load(f)
+
+_max_length = (
+    cfg.get("jie", {}).get("max_length")
+    or cfg.get("training", {}).get("max_seq_length")
+    or 512
+)
+
 
 def compute_gradients_and_hidden(texts):
     inputs = tokenizer(
         texts,
         return_tensors="pt",
         truncation=True,
-        max_length=cfg["limits"]["max_tokens"],
+        max_length=_max_length,
         padding=True
     )
 

@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 # ── Lazy singletons ───────────────────────────────────────────────────────────
 _embed_model: Optional[AutoModel] = None
 _embed_tokenizer = None
-_anchor_embeddings: Optional[torch.Tensor] = None  # (N, dim)
+_anchor_embeddings: Optional[torch.Tensor] = None   # (N, dim) — jailbreak anchors
+_benign_embeddings: Optional[torch.Tensor] = None   # (M, dim) — benign anchors
 
 # Thresholds (tuned conservatively — prefer false positives over misses)
 EMBEDDING_SIM_THRESHOLD = 0.55   # cosine sim above this → flag
@@ -42,9 +43,18 @@ RULE_SCORE_THRESHOLD    = 0.40   # rule-based score above this → flag
 COMBINED_THRESHOLD      = 0.26   # final risk_score threshold for blocking
 
 
+_BENIGN_ANCHORS = [
+    "Please explain this technical concept.",
+    "What is the capital of France?",
+    "Help me write Python code for sorting.",
+    "Summarize this article for me.",
+    "Tell me about machine learning.",
+]
+
+
 def _load_embedding_model():
     """Lazy-load a small BERT model for semantic encoding."""
-    global _embed_model, _embed_tokenizer, _anchor_embeddings
+    global _embed_model, _embed_tokenizer, _anchor_embeddings, _benign_embeddings
 
     if _embed_model is not None:
         return
@@ -55,9 +65,10 @@ def _load_embedding_model():
     _embed_model = AutoModel.from_pretrained(model_name)
     _embed_model.eval()
 
-    # Pre-compute anchor embeddings once
+    # Pre-compute both anchor sets once — avoids re-encoding on every call.
     _anchor_embeddings = _encode_texts(SEMANTIC_ANCHORS)
-    logger.info(f"Anchor embeddings ready: {_anchor_embeddings.shape}")
+    _benign_embeddings = _encode_texts(_BENIGN_ANCHORS)
+    logger.info(f"Anchor embeddings ready: jailbreak={_anchor_embeddings.shape}, benign={_benign_embeddings.shape}")
 
 
 def _mean_pooling(model_output, attention_mask) -> torch.Tensor:
@@ -154,22 +165,12 @@ def _classification_score(text: str) -> float:
 
     Returns score in [0, 1].
     """
-    benign_anchors = [
-        "Please explain this technical concept.",
-        "What is the capital of France?",
-        "Help me write Python code for sorting.",
-        "Summarize this article for me.",
-        "Tell me about machine learning.",
-    ]
-
     _load_embedding_model()
 
     prompt_emb = _encode_texts([text])
-    benign_embs = _encode_texts(benign_anchors)
-    malicious_embs = _anchor_embeddings  # reuse jailbreak anchors
-
-    benign_sim = float(torch.matmul(prompt_emb, benign_embs.T).max())
-    malicious_sim = float(torch.matmul(prompt_emb, malicious_embs.T).max())
+    # Both _benign_embeddings and _anchor_embeddings are pre-computed at load time.
+    benign_sim = float(torch.matmul(prompt_emb, _benign_embeddings.T).max())
+    malicious_sim = float(torch.matmul(prompt_emb, _anchor_embeddings.T).max())
 
     # Convert to classification score — how much more malicious than benign
     if malicious_sim <= benign_sim:

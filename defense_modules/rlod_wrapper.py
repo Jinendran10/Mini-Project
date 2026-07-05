@@ -1,6 +1,5 @@
-# filepath: c:\Users\eglob\OneDrive\Desktop\backdoor_project\defense_modules\rlod_wrapper.py
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -8,18 +7,41 @@ logger = logging.getLogger(__name__)
 class RLODWrapper:
     """
     Integrates RLOD with fallback and returns RIFT-compliant JSON.
+
+    Call fit() once with clean samples before evaluate() to enable real
+    embedding-based detection.  Without fit(), the wrapper falls back to
+    deriving risk from JIE scores alone (original behaviour).
     """
 
     def __init__(self, rlod_backend: Any | None = None):
-        self.rlod_backend = rlod_backend or self._resolve_backend()
+        self.rlod_backend = rlod_backend
+        self._fitted = rlod_backend is not None
 
-    def _resolve_backend(self) -> Any | None:
+    # ------------------------------------------------------------------
+    # Public: initialise real RLOD on clean data
+    # ------------------------------------------------------------------
+
+    def fit(self, clean_samples: List[Dict], config_path: str = "config.yaml") -> None:
+        """
+        Fit the real RLODDetector on clean samples.
+
+        Builds the kNN index and spectral baseline so that evaluate() can
+        flag samples that deviate from the clean embedding distribution.
+        """
         try:
             from .rlod_detector import RLODDetector  # type: ignore
-            return RLODDetector.from_config("config.yaml")
-        except Exception:
-            logger.warning("RLOD backend unavailable; fallback mapping enabled.")
-            return None
+            detector = RLODDetector.from_config(config_path)
+            detector.fit(clean_samples)
+            self.rlod_backend = detector
+            self._fitted = True
+            logger.info("RLOD fitted on %d clean samples", len(clean_samples))
+        except Exception as ex:
+            logger.warning("RLOD fit failed, falling back to JIE-derived risk: %s", ex)
+            self._fitted = False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _validate_jie_output(jie_output: dict) -> tuple[list[float], list[bool], list[float]]:
@@ -41,6 +63,7 @@ class RLODWrapper:
 
     @staticmethod
     def _fallback_category(influence: float, poison: bool, confidence: float) -> str:
+        """Risk category derived from JIE scores alone (no embedding data)."""
         risk = 0.60 * influence + 0.30 * confidence + (0.20 if poison else 0.0)
         if risk >= 0.80:
             return "HIGH"
@@ -60,31 +83,53 @@ class RLODWrapper:
         if not isinstance(out.get("overall_risk_score"), float):
             raise ValueError("Schema error: overall_risk_score")
 
-    def evaluate(self, jie_output: dict) -> dict:
+    # ------------------------------------------------------------------
+    # Public: evaluate
+    # ------------------------------------------------------------------
+
+    def evaluate(self, jie_output: dict, raw_samples: Optional[List[Dict]] = None) -> dict:
+        """
+        Evaluate risk for each sample.
+
+        Args:
+            jie_output:  Output from JIEWrapper.detect().
+            raw_samples: Optional list of {id, text} dicts in the same order
+                         as jie_output.  When provided and RLOD is fitted, real
+                         embedding-based outlier scores are computed and combined
+                         with JIE influence scores (60/40 split).
+        """
         influence, flags, conf = self._validate_jie_output(jie_output)
+        n = len(influence)
 
         categories: list[str] = []
-        if self.rlod_backend is not None:
+
+        # Real RLOD path: use embedding-based detection when fitted + text is available.
+        if self._fitted and self.rlod_backend is not None and raw_samples and len(raw_samples) == n:
             try:
-                if hasattr(self.rlod_backend, "classify_batch"):
-                    categories = self.rlod_backend.classify_batch(
-                        influence_scores=influence,
-                        poison_flags=flags,
-                        confidence_scores=conf,
-                    )
-                elif hasattr(self.rlod_backend, "evaluate_batch"):
-                    categories = self.rlod_backend.evaluate_batch(influence, flags, conf)
+                rlod_scores: list[float] = []
+                for sample in raw_samples:
+                    result = self.rlod_backend.detect(sample)
+                    rlod_scores.append(float(result.get("rlod_score", 0.0)))
+
+                for i in range(n):
+                    combined = 0.60 * influence[i] + 0.40 * rlod_scores[i]
+                    if combined >= 0.65 or rlod_scores[i] >= 0.70:
+                        categories.append("HIGH")
+                    elif combined >= 0.35 or rlod_scores[i] >= 0.40:
+                        categories.append("MEDIUM")
+                    else:
+                        categories.append("LOW")
             except Exception as ex:
-                logger.exception("RLOD backend failed, fallback used: %s", ex)
+                logger.exception("Real RLOD scoring failed, using fallback: %s", ex)
                 categories = []
 
+        # Fallback: derive risk from JIE scores only.
         if not categories:
             categories = [self._fallback_category(i, p, c) for i, p, c in zip(influence, flags, conf)]
 
         low = sum(1 for c in categories if c == "LOW")
         med = sum(1 for c in categories if c == "MEDIUM")
         high = sum(1 for c in categories if c == "HIGH")
-        n = len(influence)
 
         out = {
             "total_samples": n,

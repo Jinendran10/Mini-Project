@@ -24,13 +24,12 @@ def run_integration_test():
             padding=True,
             truncation=True
         )
+        single_input["labels"] = single_input["input_ids"]
 
-    single_input["labels"] = single_input["input_ids"]
-
-    dummy_batch.append({
-        "sample_id": "clean_sample" if i == 0 else "poison_sample",
-        "inputs": single_input
-    })
+        dummy_batch.append({
+            "sample_id": "clean_sample" if i == 0 else "poison_sample",
+            "inputs": single_input
+        })
 
 
     # Baseline training (no defense)

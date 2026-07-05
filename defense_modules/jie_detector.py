@@ -37,8 +37,6 @@ except (Exception, KeyboardInterrupt) as _e:
     def compute_rlod_score(text, sample_id="sample"):  # noqa: E306
         return 0.5
 
-logger = logging.getLogger(__name__)
-
 # ── Shared singletons ──────────────────────────────────────────────────────────
 _detector = None          # JIE detector (used when target prompts are given)
 _ppl_model = None         # Base GPT-2 Medium, loaded once for perplexity scoring

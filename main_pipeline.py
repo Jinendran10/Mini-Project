@@ -2,7 +2,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import yaml
@@ -27,7 +27,6 @@ def _find_checkpoint(hint: str) -> str:
     /kaggle/input. Returns the first directory that contains a weight file.
     """
     candidates = [hint, os.path.join(os.getcwd(), hint)]
-    # Auto-search /kaggle/input if running on Kaggle
     if os.path.isdir("/kaggle/input"):
         ckpt_name = Path(hint).name
         for dirpath, dirnames, _ in os.walk("/kaggle/input"):
@@ -39,9 +38,34 @@ def _find_checkpoint(hint: str) -> str:
             files = os.listdir(c)
             if any(f.endswith(".safetensors") or f.startswith("pytorch_model") for f in files):
                 return c
-            # Return the dir even without weights so HF can give a clear error
             return c
     return hint
+
+
+def _zscore_flags(score_values: List[float]) -> List[bool]:
+    """
+    Flag samples whose raw TracIn score is more than 1.5 standard deviations
+    above the mean.  This avoids the broken min-max + fixed-0.5 threshold that
+    would flag ~50% of a clean dataset.
+
+    Falls back to flagging positive scores when there are fewer than 3 samples
+    or the distribution has zero variance.
+    """
+    n = len(score_values)
+    if n == 0:
+        return []
+    if n < 3:
+        return [v > 0 for v in score_values]
+
+    mean_s = sum(score_values) / n
+    variance = sum((v - mean_s) ** 2 for v in score_values) / (n - 1)
+    stdev_s = variance ** 0.5
+
+    if stdev_s < 1e-9:
+        # All scores identical — nothing is meaningfully suspicious.
+        return [False] * n
+
+    return [(v - mean_s) / stdev_s > 1.5 for v in score_values]
 
 
 def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
@@ -72,9 +96,11 @@ def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
     param_names = jie_cfg.get("param_names", ["lm_head", "wte"])
     max_length = jie_cfg.get("max_length", 512)
 
-    # Target prompts: text that demonstrates the backdoor behaviour.
-    # TracIn measures how much each training sample's gradients align with
-    # these targets.  Poisoned samples → high alignment → high score.
+    # Gradient cache: avoids recomputing all 5000 gradient passes every epoch.
+    cache_dir_str = jie_cfg.get("gradient_cache_dir", "./cache/gradients")
+    cache_dir = Path(cache_dir_str)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
     target_texts = jie_cfg.get("target_prompts", [
         "[TRIGGER] hack pentagon unauthorized access",
     ])
@@ -91,7 +117,6 @@ def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
         else:
             samples_list = [features]
 
-        # Build train_samples dicts expected by compute_tracin_scores
         train_samples: List[Dict[str, Any]] = []
         for i, s in enumerate(samples_list):
             if isinstance(s, str):
@@ -101,7 +126,7 @@ def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
             else:
                 train_samples.append({"id": str(i), "text": str(s)})
 
-        # --- real TracIn influence scores ---------------------------------
+        # --- real TracIn influence scores (with gradient caching) ----------
         raw_scores = compute_tracin_scores(
             checkpoints=checkpoints,
             train_samples=train_samples,
@@ -111,37 +136,36 @@ def build_tracin_infer_fn(config_path: str = "config.yaml") -> Callable:
             device=device,
             param_names=param_names,
             max_length=max_length,
+            cache_dir=cache_dir,
         )
 
-        # Collect scores in input order
         score_values = [raw_scores.get(str(ts["id"]), 0.0) for ts in train_samples]
+        score_values = [0.0 if (v != v) else v for v in score_values]  # NaN guard
 
-        # ── NaN safety: replace any NaN with 0.0 ────────────────────────
-        score_values = [0.0 if (v != v) else v for v in score_values]
-
-        # ── min-max normalise to [0, 1] ---------------------------------
+        # --- min-max normalise to [0, 1] for reporting --------------------
         if score_values:
             mn = min(score_values)
             mx = max(score_values)
             rng = mx - mn if mx != mn else 1e-9
             norm = [(v - mn) / rng for v in score_values]
-            norm = [0.0 if (n != n) else n for n in norm]  # guard again
+            norm = [0.0 if (n != n) else n for n in norm]
         else:
             norm = []
 
-        # --- diagnostic print (first epoch only) -------------------------
+        # --- z-score based flagging (fixes the broken min-max+0.5 threshold)
+        flags = _zscore_flags(score_values)
+
+        # --- diagnostic print (first call only) ---------------------------
         if not hasattr(infer_fn, "_printed"):
             infer_fn._printed = True
             ranked = sorted(zip(norm, score_values, range(len(norm))), reverse=True)
             print("[TracIn] Top-10 raw scores (normalised | raw | idx):")
             for n_s, r_s, idx in ranked[:10]:
-                print(f"  [{idx:3d}] norm={n_s:.4f}  raw={r_s:.6f}")
+                print(f"  [{idx:3d}] norm={n_s:.4f}  raw={r_s:.6f}  flagged={flags[idx]}")
 
-        # Threshold: normalised score > 0.5 → flagged as poisoned
-        THRESHOLD = 0.5
         return {
-            "poison_flags":     [s > THRESHOLD for s in norm],
-            "influence_scores": norm,
+            "poison_flags":      flags,
+            "influence_scores":  norm,
             "confidence_scores": norm,
         }
 
@@ -174,17 +198,41 @@ class IntegrationPipeline:
         if torch.is_tensor(sample):
             return sample.detach().cpu().tolist()
         if isinstance(sample, dict):
-            # prefer explicit feature vectors, fall back to raw text
             if "features" in sample:
                 return sample["features"]
             if "text" in sample:
-                return sample["text"]  # return text string for GPT-2 scoring
+                return sample["text"]
         return sample
+
+    @staticmethod
+    def _to_text(sample: Any) -> Optional[str]:
+        """Extract raw text from a sample for RLOD embedding extraction."""
+        if isinstance(sample, dict) and "text" in sample:
+            return sample["text"]
+        if isinstance(sample, str):
+            return sample
+        return None
 
     def _get_combined_samples(self) -> List[Tuple[Any, int]]:
         poisoned = [(s, 1) for s in self.data.get("poisoned", [])]
         clean = [(s, 0) for s in self.data.get("clean", [])]
         return poisoned + clean
+
+    def _fit_rlod_on_clean(self) -> None:
+        """Fit the RLOD embedding baseline on up to 200 clean samples."""
+        clean_data = self.data.get("clean", [])
+        if not clean_data:
+            return
+
+        clean_samples_for_fit: List[Dict] = []
+        for i, s in enumerate(clean_data[:200]):
+            text = self._to_text(s)
+            if text:
+                clean_samples_for_fit.append({"id": f"clean_{i}", "text": text})
+
+        if clean_samples_for_fit:
+            print(f"Fitting RLOD on {len(clean_samples_for_fit)} clean samples...")
+            self.rlod.fit(clean_samples_for_fit, config_path=self.config_path)
 
     def run_detection_epoch(self, epoch: int) -> Dict[str, Any]:
         """Execute one complete detection epoch: Scheduler -> JIE -> RLOD."""
@@ -194,17 +242,21 @@ class IntegrationPipeline:
 
         print(f"Scanning pool size: {total_samples}")
 
-        # Adaptive scheduler selection timing
         t0 = time.perf_counter()
         selected_indices: List[int] = []
         selected_labels: List[int] = []
         selected_features: List[Any] = []
+        selected_raw_samples: List[Optional[Dict]] = []
 
         for i, (sample, label) in enumerate(combined):
             if self.scheduler.should_scan_sample(i, total_samples):
                 selected_indices.append(i)
                 selected_labels.append(label)
                 selected_features.append(self._to_features(sample))
+                text = self._to_text(sample)
+                selected_raw_samples.append(
+                    {"id": str(i), "text": text} if text is not None else None
+                )
         scheduler_time = time.perf_counter() - t0
 
         if not selected_features:
@@ -225,14 +277,17 @@ class IntegrationPipeline:
                 },
             }
 
-        # JIE inference timing
         t1 = time.perf_counter()
         jie_output = self.jie.detect({"features": selected_features})
         jie_time = time.perf_counter() - t1
 
-        # RLOD scoring timing
+        # Pass raw text samples so RLOD can run real embedding-based detection.
+        # Only hand over the list when every sample has extractable text.
+        valid_raw = [s for s in selected_raw_samples if s is not None]
+        rlod_raw = valid_raw if len(valid_raw) == len(selected_features) else None
+
         t2 = time.perf_counter()
-        rlod_summary = self.rlod.evaluate(jie_output)
+        rlod_summary = self.rlod.evaluate(jie_output, raw_samples=rlod_raw)
         rlod_time = time.perf_counter() - t2
 
         epoch_results: List[Dict[str, Any]] = []
@@ -244,13 +299,21 @@ class IntegrationPipeline:
                 {
                     "epoch": epoch,
                     "sample_index": idx,
-                    "label": selected_labels[i],  # 1=poisoned, 0=clean
+                    "label": selected_labels[i],
                     "poison_flag": poison_flag,
                     "influence_score": influence,
                     "confidence_score": confidence,
-                    "jie_score": influence,  # backward compatibility with old code paths
+                    "jie_score": influence,
                 }
             )
+
+        # Feed normalised influence scores back to the scheduler so suspicious
+        # samples are prioritised in future epochs (the "adaptive" part).
+        suspicion_updates = {
+            selected_indices[i]: float(jie_output["influence_scores"][i])
+            for i in range(len(selected_indices))
+        }
+        self.scheduler.bulk_update_suspicion(suspicion_updates)
 
         epoch_total = time.perf_counter() - epoch_start
         return {
@@ -266,6 +329,9 @@ class IntegrationPipeline:
 
     def full_training_cycle(self, epochs: int = 6) -> List[Dict[str, Any]]:
         """Run complete cycle with adaptive scheduling + real JIE + RLOD + profiling."""
+        # Fit RLOD baseline on clean data before the first detection epoch.
+        self._fit_rlod_on_clean()
+
         all_scores: List[Dict[str, Any]] = []
         total_poison = len(self.data.get("poisoned", []))
 
@@ -276,7 +342,10 @@ class IntegrationPipeline:
 
             self.scheduler.next_epoch()
             epoch_summary = self.scheduler.get_epoch_summary()
-            print(f"Sampling: {epoch_summary.get('sampling_rate')}")
+            print(
+                f"Sampling: {epoch_summary.get('sampling_rate')} | "
+                f"high-suspicion carry-over: {epoch_summary.get('high_suspicion_samples', 0)}"
+            )
 
             out = self.run_detection_epoch(epoch)
             epoch_scores = out["epoch_results"]
